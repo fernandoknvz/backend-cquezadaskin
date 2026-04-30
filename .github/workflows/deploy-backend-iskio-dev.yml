@@ -1,0 +1,70 @@
+name: Deploy Backend - ISKIO DEV
+on:
+    push:
+      branches:
+        - develop
+jobs:
+    StopStackService:
+      name: Stopping Backend Services - ISKIO DEV
+      runs-on: deappiskio
+      steps:
+        - name: Docker Hub login (PAT)
+          run: |
+            echo "${{ secrets.DOCKER_TOKEN_ISKIO }}" | docker login \
+            -u "${{ secrets.DOCKER_USER_ISKIO }}" --password-stdin
+        - name: Checkout code
+          uses: actions/checkout@v4
+          with:
+              fetch-depth: 0
+        - name: Stop Container Services
+          run: |
+            docker compose -f docker-compose-iskio-dev.yml stop
+
+        - name: Remove Container
+          run: |
+            docker compose -f docker-compose-iskio-dev.yml down
+        
+        - name: Clean Images
+          run: |
+            docker compose -f docker-compose-iskio-dev.yml down --rmi all
+    
+    EnvConfig:
+      name: Setup .env with Secrets - ISKIO DEV
+      runs-on: deappiskio
+      needs: StopStackService
+      steps:
+
+      - name: Reemplazar variables en .env con Secrets
+        run: |
+            # $envFile = "./.env"
+
+            envFile="./.env"
+
+            sed -i "s|^DB_NAME=.*|DB_NAME=${{ secrets.DB_NAME_DEV }}|" "$envFile"
+            sed -i "s|^DB_USER=.*|DB_USER=${{ secrets.DB_APP_USER }}|" "$envFile"
+            sed -i "s|^DB_PASS=.*|DB_PASS=${{ secrets.DB_APP_PASSWD }}|" "$envFile"
+            sed -i "s|^DB_HOST=.*|DB_HOST=${{ secrets.DB_HOST }}|" "$envFile"
+            sed -i "s|^DB_PORT=.*|DB_PORT=${{ secrets.DB_PORT }}|" "$envFile"
+            sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${{ secrets.JWT_SECRET_DEV }}|" "$envFile"
+            sed -i "s|^MAIL_MAILER=.*|MAIL_MAILER=${{ secrets.MAIL_MAILER }}|" "$envFile"
+            sed -i "s|^MAIL_HOST=.*|MAIL_HOST=${{ secrets.MAIL_HOST }}|" "$envFile"
+            sed -i "s|^MAIL_PORT=.*|MAIL_PORT=${{ secrets.MAIL_PORT }}|" "$envFile"
+            sed -i "s|^MAIL_USERNAME=.*|MAIL_USERNAME=${{ secrets.MAIL_USERNAME }}|" "$envFile"
+            sed -i "s|^MAIL_PASSWORD=.*|MAIL_PASSWORD=${{ secrets.MAIL_PASSWORD }}|" "$envFile"
+            sed -i "s|^MAIL_ENCRYPTION=.*|MAIL_ENCRYPTION=${{ secrets.MAIL_ENCRYPTION }}|" "$envFile"
+            sed -i "s|^MAIL_FROM_ADDRESS=.*|MAIL_FROM_ADDRESS=${{ secrets.MAIL_FROM_ADDRESS }}|" "$envFile"
+            sed -i "s|^MAIL_REPLY_TO=.*|MAIL_REPLY_TO=${{ secrets.MAIL_REPLY_TO }}|" "$envFile"
+            sed -i "s|^MAIL_NOTIFY_TO=.*|MAIL_NOTIFY_TO=${{ secrets.MAIL_NOTIFY_TO }}|" "$envFile"
+
+    StartStackService:
+      name: Deploy Container Backend - ISKIO DEV
+      runs-on: deappiskio
+      needs: EnvConfig
+      steps:
+        - name: Docker Hub login (PAT)
+          run: |
+            echo "${{ secrets.DOCKER_TOKEN_ISKIO }}" | docker login \
+            -u "${{ secrets.DOCKER_USER_ISKIO }}" --password-stdin
+        - name: Deploy Container Backend - ISKIO DEV
+          run: |
+            docker compose -f docker-compose-iskio-dev.yml up -d --build

@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    container_name: api
+    env_file:
+      - .env
+    expose:
+      - "80"
+    networks:
+      iskio_net:
+        ipv4_address: 172.16.145.10
+    restart: unless-stopped
+
+networks:
+  iskio_net:
+    external: true
+    name: iskio_net
