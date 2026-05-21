@@ -14,7 +14,7 @@ class ConfigController {
 
     public function handleRequest($method, $params, $body) {
         // Verificación de seguridad (solo admins pueden modificar)
-        AuthGuard::onlyAdmins($this->pdo, $method);
+        AuthGuard::onlyAdminsForMethods($this->pdo, $method);
 
         try {
             switch ($method) {
@@ -23,7 +23,12 @@ class ConfigController {
                     Response::json($data);
                     break;
 
+                case 'POST':
                 case 'PUT':
+                case 'PATCH':
+                    if (empty($body)) {
+                        return Response::error("Datos de configuración requeridos", 400);
+                    }
                     $this->model->updateConfig($body);
                     Response::json(["message" => "Configuración actualizada correctamente"]);
                     break;

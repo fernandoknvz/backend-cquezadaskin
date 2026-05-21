@@ -20,9 +20,7 @@ class CitaController {
     }
 
     public function handleRequest($method, $params, $body) {
-        if (in_array($method, ['GET', 'PUT', 'DELETE'], true)) {
-            AuthGuard::onlyAdmins($this->pdo, $method);
-        }
+        AuthGuard::onlyAdmins($this->pdo, $method);
 
         try {
             switch ($method) {
@@ -177,6 +175,7 @@ class CitaController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     $id = (int)($params['id'] ?? 0);
                     $estado = $body['estado'] ?? '';
                     $allowed = ['solicitada', 'pendiente', 'confirmada', 'cancelada'];

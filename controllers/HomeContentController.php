@@ -40,9 +40,7 @@ class HomeContentController {
     }
 
     public function handleRequest($method, $params, $body) {
-        if (in_array($method, ['POST', 'PUT', 'DELETE'])) {
-            AuthGuard::onlyAdmins($this->pdo, $method);
-        }
+        AuthGuard::onlyAdminsForMethods($this->pdo, $method);
 
         try {
             switch ($method) {
@@ -67,6 +65,7 @@ class HomeContentController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     if (empty($params['id'])) {
                         return Response::error("ID requerido para actualizar", 400);
                     }

@@ -15,7 +15,7 @@ class CategoriaController {
     public function handleRequest($method, $params, $body) {
         // 🔒 Protección de rutas administrativas
         // Permite GET público, pero requiere token para POST, PUT, DELETE
-        AuthGuard::onlyAdmins($this->pdo, $method);
+        AuthGuard::onlyAdminsForMethods($this->pdo, $method);
 
         try {
             switch ($method) {
@@ -29,6 +29,9 @@ class CategoriaController {
                     break;
 
                 case 'POST':
+                    if (trim((string)($body['nombre'] ?? '')) === '') {
+                        return Response::error("Nombre de categoría requerido", 400);
+                    }
                     $id = $this->model->create($body);
                     Response::json([
                         "message" => "Categoría creada correctamente",
@@ -37,6 +40,7 @@ class CategoriaController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     if (!isset($params['id'])) 
                         return Response::error("ID requerido", 400);
 

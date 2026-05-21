@@ -13,4 +13,12 @@ class AuthGuard {
 
         return $authUser;
     }
+
+    public static function onlyAdminsForMethods($pdo, string $method, array $protectedMethods = ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        if (!in_array(strtoupper($method), $protectedMethods, true)) {
+            return null;
+        }
+
+        return self::onlyAdmins($pdo, $method);
+    }
 }

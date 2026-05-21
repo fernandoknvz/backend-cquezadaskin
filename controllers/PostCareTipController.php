@@ -9,11 +9,12 @@ class PostCareTipController {
     private $pdo;
 
     public function __construct($pdo) {
+        $this->pdo = $pdo;
         $this->model = new PostCareTipModel($pdo);
     }
 
     public function handleRequest($method, $params, $body) {
-        AuthGuard::onlyAdmins($this->pdo, $method);
+        AuthGuard::onlyAdminsForMethods($this->pdo, $method);
         try {
             switch ($method) {
                 case 'GET':
@@ -31,6 +32,7 @@ class PostCareTipController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     if (!isset($params['id'])) return Response::error("ID requerido", 400);
                     $this->model->update($params['id'], $body);
                     Response::json(["message" => "Cuidado actualizado correctamente"]);

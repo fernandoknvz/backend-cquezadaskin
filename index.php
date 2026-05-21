@@ -112,6 +112,7 @@ if ($route === '' || $route === false) {
 $segments = explode('/', $route);
 $resource = $segments[0] ?? '';
 $subroute = $segments[1] ?? null;
+$_GET['route'] = $route;
 
 // Si el segundo segmento es numérico → lo tratamos como ID
 if (is_numeric($subroute)) {
@@ -143,6 +144,7 @@ switch ($resource) {
         break;
 
     case 'home-content':
+    case 'contenido-home':
         require __DIR__ . '/routes/homeContent.php';
         break;
 
@@ -198,7 +200,7 @@ switch ($resource) {
         require __DIR__ . '/routes/reset_password.php';
         break;
 
-    case (preg_match('/^dashboard(\/.*)?$/', $route) ? true : false):
+    case 'dashboard':
         require_once __DIR__ . '/routes/dashboard.php';
         break;
 

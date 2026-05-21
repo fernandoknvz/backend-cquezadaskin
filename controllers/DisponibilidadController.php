@@ -13,9 +13,7 @@ class DisponibilidadController {
     }
 
     public function handleRequest($method, $params, $body) {
-        if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
-            AuthGuard::onlyAdmins($this->pdo, $method);
-        }
+        AuthGuard::onlyAdminsForMethods($this->pdo, $method);
 
         try {
             switch ($method) {
@@ -28,6 +26,12 @@ class DisponibilidadController {
                         $params['include_inactive'] ?? false,
                         FILTER_VALIDATE_BOOLEAN
                     );
+
+                    if (!$fecha && !$desde && !$hasta) {
+                        $desde = date('Y-m-d');
+                        $hasta = date('Y-m-d', strtotime('+30 days'));
+                        $modo = 'dias';
+                    }
 
                     if ($fecha) {
                         $minHora = null;

@@ -9,12 +9,13 @@ class SobreNosotrosController {
     private $pdo; // 👈 guardamos el pdo para el AuthGuard
 
     public function __construct($pdo) {
+        $this->pdo = $pdo;
         $this->model = new SobreNosotrosModel($pdo);
     }
 
     public function handleRequest($method, $params, $body) {
            // 🔒 Protección: solo los admins pueden crear, editar o eliminar testimonios
-        AuthGuard::onlyAdmins($this->pdo, $method);
+        AuthGuard::onlyAdminsForMethods($this->pdo, $method);
         try {
             switch ($method) {
                 case 'GET':
@@ -28,6 +29,7 @@ class SobreNosotrosController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     if (!isset($params['id'])) return Response::error("ID requerido", 400);
                     $this->model->update($params['id'], $body);
                     Response::json(["message" => "Contenido actualizado"]);

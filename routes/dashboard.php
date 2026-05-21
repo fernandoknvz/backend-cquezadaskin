@@ -12,9 +12,11 @@
 
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../controllers/DashboardController.php';
+require_once __DIR__ . '/../utils/AuthGuard.php';
 
 $controller = new DashboardController($pdo);
 $method = $_SERVER['REQUEST_METHOD'];
+AuthGuard::onlyAdmins($pdo, $method);
 
 /**
  * ✅ IMPORTANTE
@@ -24,7 +26,7 @@ $method = $_SERVER['REQUEST_METHOD'];
  * El router central (api/index.php) ya resolvió el path en $_GET['route'].
  * Ej: dashboard/overview, dashboard/citas-hoy
  */
-$route = $_GET['route'] ?? '';
+$route = $_GET['route'] ?? 'dashboard';
 $subpath = '';
 
 // Extraer lo que viene después de "dashboard"

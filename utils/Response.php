@@ -7,6 +7,10 @@ class Response {
     }
 
     public static function error($message, $code = 400) {
-        self::json(["error" => $message], $code);
+        self::json([
+            "success" => false,
+            "message" => $message,
+            "error" => $message
+        ], $code);
     }
 }

@@ -23,9 +23,7 @@ class InstagramController {
             AuthGuard::onlyAdmins($this->pdo, $method);
         } else {
             // Público: solo protegemos mutaciones
-            if (in_array($method, ['POST', 'PUT', 'DELETE'])) {
-                AuthGuard::onlyAdmins($this->pdo, $method);
-            }
+            AuthGuard::onlyAdminsForMethods($this->pdo, $method);
         }
 
         try {
@@ -59,6 +57,7 @@ class InstagramController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     if (empty($params['id'])) {
                         return Response::error("ID requerido para actualizar", 400);
                     }

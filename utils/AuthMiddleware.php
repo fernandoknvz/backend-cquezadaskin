@@ -4,7 +4,11 @@ require_once __DIR__ . '/../controllers/AuthController.php';
 class AuthMiddleware {
     public static function verify($pdo) {
         $headers = getallheaders();
-        $auth = $headers['Authorization'] ?? '';
+        $normalizedHeaders = [];
+        foreach ($headers as $key => $value) {
+            $normalizedHeaders[strtolower($key)] = $value;
+        }
+        $auth = $normalizedHeaders['authorization'] ?? '';
 
         if (!str_starts_with($auth, 'Bearer ')) {
             Response::error("Token no proporcionado", 401);

@@ -16,25 +16,26 @@ class AuthController {
         $this->jwt_secret = JwtConfig::secret();
     }
 
-    // 🔐 LOGIN
     public function login($body) {
-        $username = trim($body['username'] ?? '');
-        $password = trim($body['password'] ?? '');
-        $email = trim($body['email'] ?? '');
+        $identifier = trim((string)($body['identifier'] ?? $body['email'] ?? $body['username'] ?? ''));
+        $password = (string)($body['password'] ?? '');
 
-        if (!$username || !$password)
-            return Response::error("Usuario y contraseña requeridos", 400);
+        if ($identifier === '' || $password === '') {
+            return Response::error("Usuario/email y contraseña requeridos", 400);
+        }
 
-        $user = $this->model->getByUsername($username);
-        if (!$user || !password_verify($password, $user['password_hash']))
+        $user = $this->model->getByIdentifier($identifier);
+        if (!$user || !password_verify($password, $user['password_hash'])) {
             return Response::error("Credenciales inválidas", 401);
+        }
 
         $payload = [
-            'sub' => $user['id'],
+            'sub' => (int)$user['id'],
             'username' => $user['username'],
+            'email' => $user['email'] ?? null,
             'rol' => $user['rol'],
             'iat' => time(),
-            'exp' => time() + (60 * 60 * 8) // 8 horas
+            'exp' => time() + (60 * 60 * 8)
         ];
 
         $token = JWT::encode($payload, $this->jwt_secret, 'HS256');
@@ -43,34 +44,50 @@ class AuthController {
             'success' => true,
             'token' => $token,
             'user' => [
-                'id' => $user['id'],
+                'id' => (int)$user['id'],
                 'username' => $user['username'],
-                'rol' => $user['rol'],
-                'email' => $user['email'] ?? null
+                'email' => $user['email'] ?? null,
+                'rol' => $user['rol']
             ]
         ]);
     }
 
-    // 🧩 CREAR NUEVO ADMIN (solo otro admin)
     public function registerAdmin($body, $authUser) {
-        if ($authUser['rol'] !== 'admin')
-            return Response::error("Solo los administradores pueden crear usuarios", 403);
+        if (($authUser['rol'] ?? '') !== 'superadmin') {
+            return Response::error("Solo superadmin puede crear usuarios administradores", 403);
+        }
 
-        $username = trim($body['username'] ?? '');
-        $password = trim($body['password'] ?? '');
+        $username = trim((string)($body['username'] ?? ''));
+        $email = trim((string)($body['email'] ?? ''));
+        $password = (string)($body['password'] ?? '');
+        $rol = trim((string)($body['rol'] ?? 'admin'));
 
-        if (!$username || !$password)
+        if ($username === '' || $password === '') {
             return Response::error("Usuario y contraseña requeridos", 400);
+        }
 
-        if ($this->model->getByUsername($username))
+        if (!preg_match('/^[A-Za-z0-9._-]{3,50}$/', $username)) {
+            return Response::error("Username inválido", 400);
+        }
+
+        if (strlen($password) < 8) {
+            return Response::error("La contraseña debe tener al menos 8 caracteres", 400);
+        }
+
+        if (!in_array($rol, ['admin', 'superadmin'], true)) {
+            return Response::error("Rol inválido", 400);
+        }
+
+        if ($this->model->getByUsername($username)) {
             return Response::error("El usuario ya existe", 409);
+        }
 
         if ($email !== '') {
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                return Response::error("Email invÃ¡lido", 400);
+                return Response::error("Email inválido", 400);
             }
             if ($this->model->getByEmail($email)) {
-                return Response::error("El email ya estÃ¡ registrado", 409);
+                return Response::error("El email ya está registrado", 409);
             }
         }
 
@@ -78,23 +95,45 @@ class AuthController {
             'username' => $username,
             'email' => $email !== '' ? $email : null,
             'password' => $password,
-            'rol' => 'admin'
+            'rol' => $rol
         ]);
 
-        Response::json(["message" => "Usuario administrador creado", "id" => $id]);
+        Response::json([
+            'message' => 'Usuario administrador creado',
+            'user' => [
+                'id' => (int)$id,
+                'username' => $username,
+                'email' => $email !== '' ? $email : null,
+                'rol' => $rol
+            ]
+        ], 201);
     }
 
-    // 👤 Obtener información del usuario logueado
     public function me($authUser) {
-        Response::json(["user" => $authUser]);
+        $userId = $authUser['sub'] ?? $authUser['id'] ?? null;
+        if (!$userId) {
+            return Response::error("Usuario no autorizado", 401);
+        }
+
+        $user = $this->model->getById($userId);
+        if (!$user) {
+            return Response::error("Usuario no encontrado", 404);
+        }
+
+        Response::json([
+            'user' => [
+                'id' => (int)$user['id'],
+                'username' => $user['username'],
+                'email' => $user['email'] ?? null,
+                'rol' => $user['rol']
+            ]
+        ]);
     }
 
-    // 🚪 Logout (solo informativo, el cliente elimina el token)
     public function logout() {
-        Response::json(["success" => true, "message" => "Sesión cerrada correctamente"]);
+        Response::json(['success' => true, 'message' => 'Sesión cerrada correctamente']);
     }
 
-    // 🧠 Validar y decodificar token
     public function verifyToken($token) {
         try {
             $decoded = JWT::decode($token, new Key($this->jwt_secret, 'HS256'));

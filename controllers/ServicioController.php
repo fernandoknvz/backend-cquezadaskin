@@ -14,9 +14,7 @@ class ServicioController {
 
     public function handleRequest($method, $params, $body) {
         try {
-            if ($method !== 'GET') {
-                AuthGuard::onlyAdmins($this->pdo, $method);
-            }
+            AuthGuard::onlyAdminsForMethods($this->pdo, $method);
 
             switch ($method) {
                 case 'GET':
@@ -35,6 +33,9 @@ class ServicioController {
                     break;
 
                 case 'POST':
+                    if (trim((string)($body['nombre'] ?? '')) === '') {
+                        return Response::error("Nombre de servicio requerido", 400);
+                    }
                     $id = $this->model->create($body);
                     Response::json([
                         "message" => "Servicio creado correctamente",
@@ -43,6 +44,7 @@ class ServicioController {
                     break;
 
                 case 'PUT':
+                case 'PATCH':
                     if (!isset($params['id'])) {
                         return Response::error("ID requerido", 400);
                     }
