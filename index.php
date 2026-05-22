@@ -172,6 +172,10 @@ switch ($resource) {
         require __DIR__ . '/routes/clientes.php';
         break;
 
+    case 'admin':
+        require __DIR__ . '/routes/admin.php';
+        break;
+
     case 'login':
         require __DIR__ . '/routes/login.php';
         break;

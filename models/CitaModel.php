@@ -22,7 +22,8 @@ class CitaModel {
     public function getById($id) {
         $sql = "SELECT c.id, c.cliente_id, c.servicio_id,
                        cli.nombre AS cliente, cli.correo, cli.telefono,
-                       s.nombre AS servicio, c.fecha, c.hora, c.estado
+                       s.nombre AS servicio, c.fecha, c.hora, c.estado,
+                       c.observacion_admin, c.creado_en, c.updated_at
                 FROM citas c
                 INNER JOIN clientes cli ON cli.id = c.cliente_id
                 INNER JOIN servicios s ON s.id = c.servicio_id
@@ -30,6 +31,87 @@ class CitaModel {
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute(['id' => (int)$id]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    public function listAdmin(array $filters): array {
+        $page = max(1, (int)($filters['page'] ?? 1));
+        $limit = min(100, max(1, (int)($filters['limit'] ?? 10)));
+        $offset = ($page - 1) * $limit;
+
+        $where = [];
+        $params = [];
+
+        if (!empty($filters['estado'])) {
+            $where[] = "c.estado = :estado";
+            $params[':estado'] = $filters['estado'];
+        }
+        if (!empty($filters['fecha_desde'])) {
+            $where[] = "DATE(c.fecha) >= :fecha_desde";
+            $params[':fecha_desde'] = $filters['fecha_desde'];
+        }
+        if (!empty($filters['fecha_hasta'])) {
+            $where[] = "DATE(c.fecha) <= :fecha_hasta";
+            $params[':fecha_hasta'] = $filters['fecha_hasta'];
+        }
+        if (!empty($filters['cliente_id'])) {
+            $where[] = "c.cliente_id = :cliente_id";
+            $params[':cliente_id'] = (int)$filters['cliente_id'];
+        }
+        if (!empty($filters['servicio_id'])) {
+            $where[] = "c.servicio_id = :servicio_id";
+            $params[':servicio_id'] = (int)$filters['servicio_id'];
+        }
+        if (!empty($filters['search'])) {
+            $where[] = "(cli.nombre LIKE :search_cliente OR cli.correo LIKE :search_correo OR cli.telefono LIKE :search_telefono OR s.nombre LIKE :search_servicio)";
+            $like = '%' . trim((string)$filters['search']) . '%';
+            $params[':search_cliente'] = $like;
+            $params[':search_correo'] = $like;
+            $params[':search_telefono'] = $like;
+            $params[':search_servicio'] = $like;
+        }
+
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+        $countStmt = $this->pdo->prepare(
+            "SELECT COUNT(*)
+             FROM citas c
+             INNER JOIN clientes cli ON cli.id = c.cliente_id
+             INNER JOIN servicios s ON s.id = c.servicio_id
+             {$whereSql}"
+        );
+        $countStmt->execute($params);
+        $total = (int)$countStmt->fetchColumn();
+
+        $sql = "SELECT c.id, c.cliente_id, c.servicio_id,
+                       cli.nombre AS cliente, cli.correo, cli.telefono,
+                       s.nombre AS servicio,
+                       DATE(c.fecha) AS fecha,
+                       TIME_FORMAT(c.hora, '%H:%i') AS hora,
+                       c.estado, c.observacion_admin, c.creado_en, c.updated_at
+                FROM citas c
+                INNER JOIN clientes cli ON cli.id = c.cliente_id
+                INNER JOIN servicios s ON s.id = c.servicio_id
+                {$whereSql}
+                ORDER BY c.fecha DESC, c.hora DESC, c.id DESC
+                LIMIT :limit OFFSET :offset";
+
+        $stmt = $this->pdo->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value);
+        }
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'data' => $stmt->fetchAll(PDO::FETCH_ASSOC),
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'total' => $total,
+                'totalPages' => (int)ceil($total / $limit),
+            ],
+        ];
     }
 
     public function getByClienteId($clienteId) {
@@ -68,7 +150,7 @@ class CitaModel {
     }
 
     public function update($id, $data) {
-        $fields = ['fecha', 'hora', 'estado', 'servicio_id'];
+        $fields = ['fecha', 'hora', 'estado', 'servicio_id', 'observacion_admin'];
         $setParts = [];
         $params = [':id' => (int)$id];
 
@@ -89,6 +171,39 @@ class CitaModel {
         return $stmt->rowCount() > 0;
     }
 
+    public function updateEstadoAdmin(int $id, string $estado, ?string $motivo = null): bool {
+        $stmt = $this->pdo->prepare(
+            "UPDATE citas
+             SET estado = :estado,
+                 observacion_admin = :observacion_admin
+             WHERE id = :id"
+        );
+        $stmt->execute([
+            ':estado' => $estado,
+            ':observacion_admin' => $motivo,
+            ':id' => $id,
+        ]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function reagendarAdmin(int $id, string $fecha, string $hora, ?string $motivo = null): bool {
+        $stmt = $this->pdo->prepare(
+            "UPDATE citas
+             SET fecha = :fecha,
+                 hora = :hora,
+                 estado = 'reagendada',
+                 observacion_admin = :observacion_admin
+             WHERE id = :id"
+        );
+        $stmt->execute([
+            ':fecha' => $fecha,
+            ':hora' => $hora,
+            ':observacion_admin' => $motivo,
+            ':id' => $id,
+        ]);
+        return $stmt->rowCount() > 0;
+    }
+
     
 
     public function isFirstSlotOfConfirmedGroup($clienteId, $servicioId, $fecha, $hora) {
@@ -104,7 +219,7 @@ class CitaModel {
         $fecha = date('Y-m-d', strtotime((string)$fecha));
         $hora = date('H:i:s', strtotime((string)$hora));
 
-        $allowed = ['solicitada', 'pendiente', 'confirmada', 'cancelada'];
+        $allowed = ['solicitada', 'pendiente', 'confirmada', 'cancelada', 'completada', 'reagendada'];
         if (!in_array($estado, $allowed, true)) {
             return [];
         }

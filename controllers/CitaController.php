@@ -178,7 +178,7 @@ class CitaController {
                 case 'PATCH':
                     $id = (int)($params['id'] ?? 0);
                     $estado = $body['estado'] ?? '';
-                    $allowed = ['solicitada', 'pendiente', 'confirmada', 'cancelada'];
+                    $allowed = ['solicitada', 'pendiente', 'confirmada', 'cancelada', 'completada', 'reagendada'];
 
                     if (!$id || ($estado && !in_array($estado, $allowed, true))) {
                         return Response::error("Datos invalidos para actualizar", 400);
