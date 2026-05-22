@@ -187,17 +187,92 @@ class CitaModel {
                        DATE(c.fecha) AS fecha,
                        TIME_FORMAT(c.hora, '%H:%i') AS hora,
                        c.estado,
+                       c.observacion_admin,
                        c.creado_en,
+                       c.updated_at,
                        c.servicio_id,
                        s.nombre AS servicio_nombre,
                        s.subtitulo AS servicio_subtitulo
                 FROM citas c
                 INNER JOIN servicios s ON s.id = c.servicio_id
                 WHERE c.cliente_id = :cliente_id
-                ORDER BY c.fecha DESC, c.hora DESC, c.id DESC";
+                ORDER BY
+                    CASE
+                        WHEN CONCAT(DATE(c.fecha), ' ', COALESCE(c.hora, '00:00:00')) >= NOW()
+                             AND c.estado NOT IN ('cancelada','completada') THEN 0
+                        ELSE 1
+                    END ASC,
+                    CASE
+                        WHEN CONCAT(DATE(c.fecha), ' ', COALESCE(c.hora, '00:00:00')) >= NOW()
+                             AND c.estado NOT IN ('cancelada','completada') THEN CONCAT(DATE(c.fecha), ' ', COALESCE(c.hora, '00:00:00'))
+                    END ASC,
+                    c.fecha DESC, c.hora DESC, c.id DESC";
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute(['cliente_id' => (int)$clienteId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function getClienteReservaById(int $id, int $clienteId) {
+        $sql = "SELECT c.id,
+                       c.cliente_id,
+                       c.servicio_id,
+                       s.nombre AS servicio_nombre,
+                       DATE(c.fecha) AS fecha,
+                       TIME_FORMAT(c.hora, '%H:%i') AS hora,
+                       c.estado,
+                       c.observacion_admin,
+                       c.creado_en,
+                       c.updated_at
+                FROM citas c
+                INNER JOIN servicios s ON s.id = c.servicio_id
+                WHERE c.id = :id";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([':id' => $id]);
+        $reserva = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$reserva) {
+            return null;
+        }
+
+        if ((int)$reserva['cliente_id'] !== $clienteId) {
+            return false;
+        }
+
+        return $reserva;
+    }
+
+    public function cancelarClienteReserva(int $id, int $clienteId, ?string $motivo = null): bool {
+        $stmt = $this->pdo->prepare(
+            "UPDATE citas
+             SET estado = 'cancelada',
+                 observacion_admin = :motivo
+             WHERE id = :id AND cliente_id = :cliente_id"
+        );
+        $stmt->execute([
+            ':motivo' => $motivo,
+            ':id' => $id,
+            ':cliente_id' => $clienteId,
+        ]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function reagendarClienteReserva(int $id, int $clienteId, string $fecha, string $hora, ?string $motivo = null): bool {
+        $stmt = $this->pdo->prepare(
+            "UPDATE citas
+             SET fecha = :fecha,
+                 hora = :hora,
+                 estado = 'reagendada',
+                 observacion_admin = :motivo
+             WHERE id = :id AND cliente_id = :cliente_id"
+        );
+        $stmt->execute([
+            ':fecha' => $fecha,
+            ':hora' => $hora,
+            ':motivo' => $motivo,
+            ':id' => $id,
+            ':cliente_id' => $clienteId,
+        ]);
+        return $stmt->rowCount() > 0;
     }
 
     // ✅ Crear nueva cita

@@ -169,8 +169,8 @@ class ClienteModel {
         $hasPassword = array_key_exists('password_hash', $data) || array_key_exists('password', $data);
 
         if ($hasPassword) {
-            $sql = "INSERT INTO clientes (nombre, rut, correo, telefono, password_hash, acepta_politica, fecha_aceptacion)
-                    VALUES (:nombre, :rut, :correo, :telefono, :password_hash, :acepta_politica, :fecha_aceptacion)";
+            $sql = "INSERT INTO clientes (nombre, rut, correo, telefono, password_hash, acepta_politica, acepta_promociones, fecha_aceptacion)
+                    VALUES (:nombre, :rut, :correo, :telefono, :password_hash, :acepta_politica, :acepta_promociones, :fecha_aceptacion)";
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute([
                 ':nombre' => $data['nombre'],
@@ -179,6 +179,7 @@ class ClienteModel {
                 ':telefono' => $data['telefono'] ?? null,
                 ':password_hash' => $data['password_hash'] ?? password_hash($data['password'], PASSWORD_BCRYPT),
                 ':acepta_politica' => !empty($data['acepta_politica']) ? 1 : 0,
+                ':acepta_promociones' => !empty($data['acepta_promociones']) ? 1 : 0,
                 ':fecha_aceptacion' => $data['fecha_aceptacion'] ?? null,
             ]);
             return $this->pdo->lastInsertId();
@@ -195,7 +196,7 @@ class ClienteModel {
         $fields = [];
         $params = [':id' => (int)$id];
 
-        foreach (['nombre', 'rut', 'telefono'] as $field) {
+        foreach (['nombre', 'rut', 'correo', 'telefono', 'acepta_promociones'] as $field) {
             if (array_key_exists($field, $data)) {
                 $fields[] = "$field = :$field";
                 $params[":$field"] = $data[$field];
@@ -263,7 +264,9 @@ class ClienteModel {
             'telefono' => $cliente['telefono'] ?? null,
             'acepta_politica' => (bool)($cliente['acepta_politica'] ?? false),
             'fecha_aceptacion' => $cliente['fecha_aceptacion'] ?? null,
+            'acepta_promociones' => (bool)($cliente['acepta_promociones'] ?? false),
             'creado_en' => $cliente['creado_en'] ?? null,
+            'updated_at' => $cliente['updated_at'] ?? null,
         ];
     }
 

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../models/ClienteModel.php';
 require_once __DIR__ . '/../models/CitaModel.php';
+require_once __DIR__ . '/../models/DisponibilidadModel.php';
 require_once __DIR__ . '/../utils/Response.php';
 require_once __DIR__ . '/../utils/JwtConfig.php';
 require_once __DIR__ . '/../utils/RutValidator.php';
@@ -12,11 +13,13 @@ use Firebase\JWT\Key;
 class ClienteAuthController {
     private $model;
     private $citaModel;
+    private $disponibilidadModel;
     private $jwt_secret;
 
     public function __construct($pdo) {
         $this->model = new ClienteModel($pdo);
         $this->citaModel = new CitaModel($pdo);
+        $this->disponibilidadModel = new DisponibilidadModel($pdo);
         $this->jwt_secret = JwtConfig::secret();
     }
 
@@ -77,6 +80,7 @@ class ClienteAuthController {
                     'telefono' => $telefono,
                     'password' => $password,
                     'acepta_politica' => true,
+                    'acepta_promociones' => filter_var($body['preferencias_promociones'] ?? $body['acepta_promociones'] ?? false, FILTER_VALIDATE_BOOLEAN),
                     'fecha_aceptacion' => date('Y-m-d H:i:s'),
                 ]);
                 $cliente = $this->model->getById($id);
@@ -134,6 +138,8 @@ class ClienteAuthController {
         }
 
         Response::json([
+            'success' => true,
+            'data' => $this->model->safeArray($cliente),
             'cliente' => $this->model->safeArray($cliente),
         ]);
     }
@@ -163,16 +169,78 @@ class ClienteAuthController {
             $data['telefono'] = $telefono !== '' ? $telefono : null;
         }
 
+        if (array_key_exists('correo', $body) || array_key_exists('email', $body)) {
+            $correo = strtolower(trim((string)($body['correo'] ?? $body['email'] ?? '')));
+            if ($correo === '' || !filter_var($correo, FILTER_VALIDATE_EMAIL)) {
+                return Response::error("Correo invalido", 400);
+            }
+            $existing = $this->model->getByCorreo($correo);
+            if ($existing && (int)$existing['id'] !== $id) {
+                return Response::error("Ya existe una cuenta registrada con este correo.", 409);
+            }
+            $data['correo'] = $correo;
+        }
+
+        if (array_key_exists('preferencias_promociones', $body) || array_key_exists('acepta_promociones', $body)) {
+            $data['acepta_promociones'] = filter_var(
+                $body['preferencias_promociones'] ?? $body['acepta_promociones'],
+                FILTER_VALIDATE_BOOLEAN
+            ) ? 1 : 0;
+        }
+
         if (empty($data)) {
             return Response::error("No hay campos validos para actualizar", 400);
         }
 
-        $this->model->updateProfile($id, $data);
+        try {
+            $this->model->updateProfile($id, $data);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                return Response::error("Correo o RUT ya registrado por otro cliente", 409);
+            }
+            throw $e;
+        }
         $updated = $this->model->getById($id);
 
         Response::json([
+            'success' => true,
             'message' => 'Perfil actualizado',
+            'data' => $this->model->safeArray($updated),
             'cliente' => $this->model->safeArray($updated),
+        ]);
+    }
+
+    public function updatePassword($authUser, $body) {
+        $id = $this->resolveClienteId($authUser);
+        if (!$id) {
+            return Response::error("Cliente no autorizado", 401);
+        }
+
+        $cliente = $this->model->getById($id);
+        if (!$cliente) {
+            return Response::error("Cliente no encontrado", 404);
+        }
+
+        $actual = (string)($body['password_actual'] ?? $body['current_password'] ?? '');
+        $nueva = (string)($body['password_nueva'] ?? $body['new_password'] ?? '');
+
+        if ($actual === '' || $nueva === '') {
+            return Response::error("password_actual y password_nueva son requeridos", 400);
+        }
+
+        if (empty($cliente['password_hash']) || !password_verify($actual, $cliente['password_hash'])) {
+            return Response::error("Password actual incorrecta", 401);
+        }
+
+        if (strlen($nueva) < 8) {
+            return Response::error("La nueva password debe tener al menos 8 caracteres", 400);
+        }
+
+        $this->model->updatePasswordHash($id, password_hash($nueva, PASSWORD_BCRYPT));
+
+        Response::json([
+            'success' => true,
+            'message' => 'Password actualizada',
         ]);
     }
 
@@ -206,8 +274,92 @@ class ClienteAuthController {
             return Response::error("Cliente no encontrado", 404);
         }
 
+        $reservas = $this->citaModel->getByClienteId($id);
+        $split = $this->splitReservas($reservas);
+
         Response::json([
-            'reservas' => $this->citaModel->getByClienteId($id),
+            'success' => true,
+            'data' => $split,
+            'reservas' => $reservas,
+        ]);
+    }
+
+    public function cancelarReserva($authUser, int $reservaId, array $body) {
+        $clienteId = $this->resolveClienteId($authUser);
+        if (!$clienteId) {
+            return Response::error("Cliente no autorizado", 401);
+        }
+
+        $reserva = $this->citaModel->getClienteReservaById($reservaId, $clienteId);
+        if ($reserva === null) {
+            return Response::error("Reserva no encontrada", 404);
+        }
+        if ($reserva === false) {
+            return Response::error("No puedes acceder a esta reserva", 403);
+        }
+
+        if (in_array($reserva['estado'], ['cancelada', 'completada'], true)) {
+            return Response::error("Esta reserva no se puede cancelar", 400);
+        }
+
+        if ($this->isTooSoon($reserva['fecha'], $reserva['hora'])) {
+            return Response::error("No puedes cancelar una reserva con menos de 2 horas de anticipación", 400);
+        }
+
+        $motivo = $this->optionalText($body['motivo'] ?? null);
+        $this->citaModel->cancelarClienteReserva($reservaId, $clienteId, $motivo);
+
+        Response::json([
+            'success' => true,
+            'message' => 'Reserva cancelada',
+            'data' => $this->citaModel->getClienteReservaById($reservaId, $clienteId),
+        ]);
+    }
+
+    public function reagendarReserva($authUser, int $reservaId, array $body) {
+        $clienteId = $this->resolveClienteId($authUser);
+        if (!$clienteId) {
+            return Response::error("Cliente no autorizado", 401);
+        }
+
+        $reserva = $this->citaModel->getClienteReservaById($reservaId, $clienteId);
+        if ($reserva === null) {
+            return Response::error("Reserva no encontrada", 404);
+        }
+        if ($reserva === false) {
+            return Response::error("No puedes acceder a esta reserva", 403);
+        }
+
+        if (in_array($reserva['estado'], ['cancelada', 'completada'], true)) {
+            return Response::error("Esta reserva no se puede reagendar", 400);
+        }
+
+        $fecha = $this->normalizeDate($body['fecha'] ?? null);
+        $hora = $this->normalizeTime($body['hora'] ?? null);
+        $motivo = $this->optionalText($body['motivo'] ?? null);
+
+        if (!$fecha || !$hora) {
+            return Response::error("fecha y hora válidas son requeridas", 400);
+        }
+
+        if ($this->isTooSoon($fecha, $hora)) {
+            return Response::error("Debes escoger un horario con al menos 2 horas de anticipación", 400);
+        }
+
+        if ($this->citaModel->hasActiveConflict($fecha, $hora, $reservaId)) {
+            return Response::error("Ya existe una reserva activa en ese horario", 409);
+        }
+
+        if (!$this->disponibilidadModel->isSlotAvailable($fecha, $hora, $reservaId)) {
+            return Response::error("Horario no disponible", 409);
+        }
+
+        $this->citaModel->reagendarClienteReserva($reservaId, $clienteId, $fecha, $hora, $motivo);
+
+        Response::json([
+            'success' => true,
+            'message' => 'Reserva reagendada',
+            'data' => $this->citaModel->getClienteReservaById($reservaId, $clienteId),
         ]);
     }
 
@@ -230,6 +382,59 @@ class ClienteAuthController {
         ];
 
         return JWT::encode($payload, $this->jwt_secret, 'HS256');
+    }
+
+    private function resolveClienteId($authUser): int {
+        return (int)($authUser['cliente_id'] ?? ($authUser['sub'] ?? 0));
+    }
+
+    private function splitReservas(array $reservas): array {
+        $now = time();
+        $proximas = [];
+        $historial = [];
+
+        foreach ($reservas as $reserva) {
+            $ts = strtotime(($reserva['fecha'] ?? '') . ' ' . ($reserva['hora'] ?? '00:00'));
+            if ($ts !== false && $ts >= $now && !in_array($reserva['estado'], ['cancelada', 'completada'], true)) {
+                $proximas[] = $reserva;
+            } else {
+                $historial[] = $reserva;
+            }
+        }
+
+        return ['proximas' => $proximas, 'historial' => $historial];
+    }
+
+    private function normalizeDate($value): ?string {
+        if (!is_string($value)) {
+            return null;
+        }
+        $value = trim($value);
+        $date = DateTime::createFromFormat('Y-m-d', $value);
+        return ($date && $date->format('Y-m-d') === $value) ? $value : null;
+    }
+
+    private function normalizeTime($value): ?string {
+        if (!is_string($value)) {
+            return null;
+        }
+        $value = trim($value);
+        $time = DateTime::createFromFormat('H:i', $value)
+            ?: DateTime::createFromFormat('H:i:s', $value);
+        return $time ? $time->format('H:i:s') : null;
+    }
+
+    private function optionalText($value): ?string {
+        if ($value === null) {
+            return null;
+        }
+        $value = trim((string)$value);
+        return $value !== '' ? $value : null;
+    }
+
+    private function isTooSoon(string $fecha, string $hora): bool {
+        $ts = strtotime($fecha . ' ' . $hora);
+        return $ts === false || $ts < (time() + (2 * 60 * 60));
     }
 
 }

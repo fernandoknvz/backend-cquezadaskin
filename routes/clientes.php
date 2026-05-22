@@ -8,9 +8,11 @@ $controller = new ClienteAuthController($pdo);
 $method = $_SERVER['REQUEST_METHOD'];
 $body = json_decode(file_get_contents("php://input"), true) ?? [];
 
-$requestUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$segments = explode('/', trim($requestUri, '/'));
-$action = end($segments);
+$route = trim((string)($_GET['route'] ?? ''), '/');
+$segments = explode('/', $route);
+$action = $segments[1] ?? '';
+$id = isset($segments[2]) && ctype_digit((string)$segments[2]) ? (int)$segments[2] : null;
+$subaction = $segments[3] ?? '';
 
 if ($method === 'POST' && $action === 'register') {
     $controller->register($body);
@@ -28,7 +30,13 @@ if ($method === 'GET' && $action === 'me') {
     exit;
 }
 
-if (($method === 'PUT' || $method === 'PATCH') && $action === 'me') {
+if ($method === 'PATCH' && $action === 'me' && ($segments[2] ?? '') === 'password') {
+    $authUser = ClientAuthMiddleware::verify($pdo);
+    $controller->updatePassword($authUser, $body);
+    exit;
+}
+
+if (($method === 'PUT' || $method === 'PATCH') && $action === 'me' && !isset($segments[2])) {
     $authUser = ClientAuthMiddleware::verify($pdo);
     $controller->updateMe($authUser, $body);
     exit;
@@ -43,6 +51,18 @@ if ($method === 'DELETE' && $action === 'me') {
 if ($method === 'GET' && $action === 'reservas') {
     $authUser = ClientAuthMiddleware::verify($pdo);
     $controller->reservas($authUser);
+    exit;
+}
+
+if ($method === 'PATCH' && $action === 'reservas' && $id && $subaction === 'cancelar') {
+    $authUser = ClientAuthMiddleware::verify($pdo);
+    $controller->cancelarReserva($authUser, $id, $body);
+    exit;
+}
+
+if ($method === 'PATCH' && $action === 'reservas' && $id && $subaction === 'reagendar') {
+    $authUser = ClientAuthMiddleware::verify($pdo);
+    $controller->reagendarReserva($authUser, $id, $body);
     exit;
 }
 
