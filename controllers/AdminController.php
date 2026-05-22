@@ -1,17 +1,20 @@
 <?php
 require_once __DIR__ . '/../models/ClienteModel.php';
 require_once __DIR__ . '/../models/CitaModel.php';
+require_once __DIR__ . '/../models/DisponibilidadModel.php';
 require_once __DIR__ . '/../utils/Response.php';
 
 class AdminController {
     private ClienteModel $clienteModel;
     private CitaModel $citaModel;
+    private DisponibilidadModel $disponibilidadModel;
 
     private const ESTADOS_RESERVA = ['solicitada', 'pendiente', 'confirmada', 'cancelada', 'completada', 'reagendada'];
 
     public function __construct($pdo) {
         $this->clienteModel = new ClienteModel($pdo);
         $this->citaModel = new CitaModel($pdo);
+        $this->disponibilidadModel = new DisponibilidadModel($pdo);
     }
 
     public function handleRequest(string $method, array $segments, array $params, array $body): void {
@@ -24,6 +27,21 @@ class AdminController {
 
         if ($resource === 'reservas') {
             $this->handleReservas($method, $segments, $params, $body);
+            return;
+        }
+
+        if ($resource === 'calendario') {
+            $this->handleCalendario($method, $segments, $params);
+            return;
+        }
+
+        if ($resource === 'disponibilidad') {
+            $this->handleDisponibilidad($method, $segments, $params, $body);
+            return;
+        }
+
+        if ($resource === 'bloqueos') {
+            $this->handleBloqueos($method, $segments, $body);
             return;
         }
 
@@ -196,6 +214,212 @@ class AdminController {
         Response::error("Método no permitido", 405);
     }
 
+    private function handleCalendario(string $method, array $segments, array $params): void {
+        if ($method !== 'GET') {
+            Response::error("Método no permitido", 405);
+            return;
+        }
+
+        $scope = $segments[2] ?? '';
+        $filters = $this->normalizeCalendarioFilters($params);
+        if (isset($filters['error'])) {
+            Response::error($filters['error'], 400);
+            return;
+        }
+
+        if ($scope === 'dia') {
+            $fecha = $this->normalizeDate($params['fecha'] ?? $params['fecha_desde'] ?? date('Y-m-d'));
+            if (!$fecha) {
+                Response::error("Fecha inválida", 400);
+                return;
+            }
+            $filters['fecha_desde'] = $fecha;
+            $filters['fecha_hasta'] = $fecha;
+        } elseif ($scope === 'semana') {
+            $fecha = $this->normalizeDate($params['fecha'] ?? date('Y-m-d'));
+            if (!$fecha) {
+                Response::error("Fecha inválida", 400);
+                return;
+            }
+            $start = new DateTime($fecha);
+            $start->modify('monday this week');
+            $end = clone $start;
+            $end->modify('+6 days');
+            $filters['fecha_desde'] = $start->format('Y-m-d');
+            $filters['fecha_hasta'] = $end->format('Y-m-d');
+        } elseif ($scope !== '') {
+            Response::error("Ruta de calendario no encontrada", 404);
+            return;
+        }
+
+        Response::json([
+            'success' => true,
+            'data' => $this->citaModel->listCalendar($filters),
+        ]);
+    }
+
+    private function handleDisponibilidad(string $method, array $segments, array $params, array $body): void {
+        $id = $this->numericId($segments[2] ?? null);
+
+        if ($method === 'GET') {
+            $filters = $this->normalizeDisponibilidadFilters($params);
+            if (isset($filters['error'])) {
+                Response::error($filters['error'], 400);
+                return;
+            }
+            Response::json([
+                'success' => true,
+                'data' => $this->disponibilidadModel->listAdmin($filters),
+            ]);
+            return;
+        }
+
+        if ($method === 'POST') {
+            $this->createDisponibilidad($body, false);
+            return;
+        }
+
+        if (!$id) {
+            Response::error("ID de disponibilidad inválido", 400);
+            return;
+        }
+
+        if ($method === 'PATCH') {
+            $this->updateDisponibilidad($id, $body);
+            return;
+        }
+
+        if ($method === 'DELETE') {
+            if (!$this->disponibilidadModel->getById($id)) {
+                Response::error("Horario no encontrado", 404);
+                return;
+            }
+            $this->disponibilidadModel->deleteSlot($id);
+            Response::json(['success' => true, 'message' => 'Horario eliminado']);
+            return;
+        }
+
+        Response::error("Método no permitido", 405);
+    }
+
+    private function handleBloqueos(string $method, array $segments, array $body): void {
+        $id = $this->numericId($segments[2] ?? null);
+
+        if ($method === 'POST') {
+            $this->createDisponibilidad($body, true);
+            return;
+        }
+
+        if ($method === 'DELETE') {
+            if (!$id) {
+                Response::error("ID de bloqueo inválido", 400);
+                return;
+            }
+            $slot = $this->disponibilidadModel->getById($id);
+            if (!$slot || ($slot['tipo'] ?? '') !== 'bloqueo') {
+                Response::error("Bloqueo no encontrado", 404);
+                return;
+            }
+            $this->disponibilidadModel->deleteSlot($id);
+            Response::json(['success' => true, 'message' => 'Bloqueo eliminado']);
+            return;
+        }
+
+        Response::error("Método no permitido", 405);
+    }
+
+    private function createDisponibilidad(array $body, bool $forceBloqueo): void {
+        $fecha = $this->normalizeDate($body['fecha'] ?? null);
+        $hora = $this->normalizeTime($body['hora'] ?? null);
+        $motivo = $this->optionalText($body['motivo'] ?? null);
+        $disponible = $forceBloqueo ? false : filter_var($body['disponible'] ?? true, FILTER_VALIDATE_BOOLEAN);
+        $tipo = $forceBloqueo || !$disponible ? 'bloqueo' : 'disponible';
+
+        if (!$fecha || !$hora) {
+            Response::error("fecha y hora válidas son requeridas", 400);
+            return;
+        }
+
+        if (!$disponible && $this->disponibilidadModel->hasActiveBooking($fecha, $hora)) {
+            Response::error("No se puede bloquear un horario con reserva activa", 409);
+            return;
+        }
+
+        $id = $this->disponibilidadModel->upsertSlot($fecha, $hora, $disponible, $motivo, $tipo);
+        Response::json([
+            'success' => true,
+            'message' => $tipo === 'bloqueo' ? 'Bloqueo guardado' : 'Disponibilidad guardada',
+            'data' => $this->disponibilidadModel->getById($id),
+        ], 201);
+    }
+
+    private function updateDisponibilidad(int $id, array $body): void {
+        $slot = $this->disponibilidadModel->getById($id);
+        if (!$slot) {
+            Response::error("Horario no encontrado", 404);
+            return;
+        }
+
+        $data = [];
+        $fecha = array_key_exists('fecha', $body) ? $this->normalizeDate($body['fecha']) : $slot['fecha'];
+        $hora = array_key_exists('hora', $body) ? $this->normalizeTime($body['hora']) : $this->normalizeTime($slot['hora']);
+
+        if (!$fecha || !$hora) {
+            Response::error("fecha u hora inválida", 400);
+            return;
+        }
+
+        if (array_key_exists('fecha', $body)) {
+            $data['fecha'] = $fecha;
+        }
+        if (array_key_exists('hora', $body)) {
+            $data['hora'] = $hora;
+        }
+        if (array_key_exists('disponible', $body)) {
+            $data['disponible'] = filter_var($body['disponible'], FILTER_VALIDATE_BOOLEAN);
+            $data['tipo'] = $data['disponible'] ? 'disponible' : 'bloqueo';
+        }
+        if (array_key_exists('motivo', $body)) {
+            $data['motivo'] = $this->optionalText($body['motivo']);
+        }
+        if (array_key_exists('tipo', $body)) {
+            $tipo = trim((string)$body['tipo']);
+            if (!in_array($tipo, ['disponible', 'bloqueo'], true)) {
+                Response::error("Tipo inválido", 400);
+                return;
+            }
+            $data['tipo'] = $tipo;
+            if (!array_key_exists('disponible', $data)) {
+                $data['disponible'] = $tipo === 'disponible';
+            }
+        }
+
+        $willBeUnavailable = array_key_exists('disponible', $data)
+            ? !$data['disponible']
+            : (int)($slot['disponible'] ?? 0) !== 1;
+
+        if ($willBeUnavailable && $this->disponibilidadModel->hasActiveBooking($fecha, $hora)) {
+            Response::error("No se puede bloquear un horario con reserva activa", 409);
+            return;
+        }
+
+        try {
+            $this->disponibilidadModel->updateSlot($id, $data);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                Response::error("Ya existe un horario para esa fecha y hora", 409);
+                return;
+            }
+            throw $e;
+        }
+
+        Response::json([
+            'success' => true,
+            'message' => 'Horario actualizado',
+            'data' => $this->disponibilidadModel->getById($id),
+        ]);
+    }
+
     private function updateReservaEstado(int $id, array $body): void {
         $estado = trim((string)($body['estado'] ?? ''));
         $motivo = $this->optionalText($body['motivo'] ?? $body['observacion_admin'] ?? null);
@@ -230,6 +454,16 @@ class AdminController {
 
         if (!$this->citaModel->getById($id)) {
             Response::error("Reserva no encontrada", 404);
+            return;
+        }
+
+        if ($this->citaModel->hasActiveConflict($fecha, $hora, $id)) {
+            Response::error("Ya existe una reserva activa en ese horario", 409);
+            return;
+        }
+
+        if (!$this->disponibilidadModel->isSlotAvailable($fecha, $hora, $id)) {
+            Response::error("Horario no disponible", 409);
             return;
         }
 
@@ -274,6 +508,82 @@ class AdminController {
                 }
                 $filters[$field] = $id;
             }
+        }
+
+        return $filters;
+    }
+
+    private function normalizeCalendarioFilters(array $params): array {
+        $filters = [];
+
+        foreach (['fecha_desde', 'fecha_hasta'] as $field) {
+            if (!empty($params[$field])) {
+                $date = $this->normalizeDate($params[$field]);
+                if (!$date) {
+                    return ['error' => "{$field} inválida"];
+                }
+                $filters[$field] = $date;
+            }
+        }
+
+        if (empty($filters['fecha_desde']) && empty($filters['fecha_hasta'])) {
+            $filters['fecha_desde'] = date('Y-m-d');
+            $filters['fecha_hasta'] = date('Y-m-d', strtotime('+30 days'));
+        }
+
+        if (!empty($params['estado'])) {
+            $estado = trim((string)$params['estado']);
+            if (!in_array($estado, self::ESTADOS_RESERVA, true)) {
+                return ['error' => 'Estado inválido'];
+            }
+            $filters['estado'] = $estado;
+        }
+
+        foreach (['servicio_id', 'cliente_id'] as $field) {
+            if (!empty($params[$field])) {
+                $id = $this->numericId($params[$field]);
+                if (!$id) {
+                    return ['error' => "{$field} inválido"];
+                }
+                $filters[$field] = $id;
+            }
+        }
+
+        return $filters;
+    }
+
+    private function normalizeDisponibilidadFilters(array $params): array {
+        $filters = [];
+
+        foreach (['fecha_desde', 'fecha_hasta'] as $field) {
+            if (!empty($params[$field])) {
+                $date = $this->normalizeDate($params[$field]);
+                if (!$date) {
+                    return ['error' => "{$field} inválida"];
+                }
+                $filters[$field] = $date;
+            }
+        }
+
+        if (!empty($params['fecha'])) {
+            $date = $this->normalizeDate($params['fecha']);
+            if (!$date) {
+                return ['error' => 'fecha inválida'];
+            }
+            $filters['fecha_desde'] = $date;
+            $filters['fecha_hasta'] = $date;
+        }
+
+        if (!empty($params['tipo'])) {
+            $tipo = trim((string)$params['tipo']);
+            if (!in_array($tipo, ['disponible', 'bloqueo'], true)) {
+                return ['error' => 'Tipo inválido'];
+            }
+            $filters['tipo'] = $tipo;
+        }
+
+        if (array_key_exists('disponible', $params)) {
+            $filters['activo'] = filter_var($params['disponible'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
         }
 
         return $filters;

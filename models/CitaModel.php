@@ -114,6 +114,74 @@ class CitaModel {
         ];
     }
 
+    public function listCalendar(array $filters): array {
+        $where = [];
+        $params = [];
+
+        if (!empty($filters['fecha_desde'])) {
+            $where[] = "DATE(c.fecha) >= :fecha_desde";
+            $params[':fecha_desde'] = $filters['fecha_desde'];
+        }
+        if (!empty($filters['fecha_hasta'])) {
+            $where[] = "DATE(c.fecha) <= :fecha_hasta";
+            $params[':fecha_hasta'] = $filters['fecha_hasta'];
+        }
+        if (!empty($filters['estado'])) {
+            $where[] = "c.estado = :estado";
+            $params[':estado'] = $filters['estado'];
+        }
+        if (!empty($filters['servicio_id'])) {
+            $where[] = "c.servicio_id = :servicio_id";
+            $params[':servicio_id'] = (int)$filters['servicio_id'];
+        }
+        if (!empty($filters['cliente_id'])) {
+            $where[] = "c.cliente_id = :cliente_id";
+            $params[':cliente_id'] = (int)$filters['cliente_id'];
+        }
+
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+        $sql = "SELECT c.id,
+                       c.cliente_id,
+                       cli.nombre AS cliente_nombre,
+                       cli.correo AS cliente_correo,
+                       cli.telefono AS cliente_telefono,
+                       c.servicio_id,
+                       s.nombre AS servicio_nombre,
+                       DATE(c.fecha) AS fecha,
+                       TIME_FORMAT(c.hora, '%H:%i') AS hora,
+                       c.estado,
+                       c.observacion_admin,
+                       c.creado_en,
+                       c.updated_at
+                FROM citas c
+                INNER JOIN clientes cli ON cli.id = c.cliente_id
+                INNER JOIN servicios s ON s.id = c.servicio_id
+                {$whereSql}
+                ORDER BY c.fecha ASC, c.hora ASC, c.id ASC";
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function hasActiveConflict(string $fecha, string $hora, ?int $excludeId = null): bool {
+        $params = [':fecha' => $fecha, ':hora' => $hora];
+        $sql = "SELECT COUNT(*)
+                FROM citas
+                WHERE DATE(fecha) = :fecha
+                  AND hora = :hora
+                  AND estado IN ('solicitada','pendiente','confirmada','reagendada')";
+        if ($excludeId !== null) {
+            $sql .= " AND id != :exclude_id";
+            $params[':exclude_id'] = $excludeId;
+        }
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return (int)$stmt->fetchColumn() > 0;
+    }
+
     public function getByClienteId($clienteId) {
         $sql = "SELECT c.id,
                        DATE(c.fecha) AS fecha,
