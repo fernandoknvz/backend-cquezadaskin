@@ -2,12 +2,18 @@
 require_once __DIR__ . '/../models/ClienteModel.php';
 require_once __DIR__ . '/../models/CitaModel.php';
 require_once __DIR__ . '/../models/DisponibilidadModel.php';
+require_once __DIR__ . '/../models/FaqModel.php';
+require_once __DIR__ . '/../models/TestimonioModel.php';
+require_once __DIR__ . '/../controllers/FaqController.php';
 require_once __DIR__ . '/../utils/Response.php';
 
 class AdminController {
     private ClienteModel $clienteModel;
     private CitaModel $citaModel;
     private DisponibilidadModel $disponibilidadModel;
+    private FaqModel $faqModel;
+    private TestimonioModel $testimonioModel;
+    private FaqController $faqController;
 
     private const ESTADOS_RESERVA = ['solicitada', 'pendiente', 'confirmada', 'cancelada', 'completada', 'reagendada'];
 
@@ -15,6 +21,9 @@ class AdminController {
         $this->clienteModel = new ClienteModel($pdo);
         $this->citaModel = new CitaModel($pdo);
         $this->disponibilidadModel = new DisponibilidadModel($pdo);
+        $this->faqModel = new FaqModel($pdo);
+        $this->testimonioModel = new TestimonioModel($pdo);
+        $this->faqController = new FaqController($pdo);
     }
 
     public function handleRequest(string $method, array $segments, array $params, array $body): void {
@@ -42,6 +51,16 @@ class AdminController {
 
         if ($resource === 'bloqueos') {
             $this->handleBloqueos($method, $segments, $body);
+            return;
+        }
+
+        if ($resource === 'faq') {
+            $this->handleFaq($method, $segments, $body);
+            return;
+        }
+
+        if ($resource === 'valoraciones') {
+            $this->handleValoraciones($method, $segments, $body);
             return;
         }
 
@@ -326,6 +345,158 @@ class AdminController {
         }
 
         Response::error("Método no permitido", 405);
+    }
+
+    private function handleFaq(string $method, array $segments, array $body): void {
+        $id = $this->numericId($segments[2] ?? null);
+
+        if ($method === 'GET' && !$id) {
+            $this->faqController->adminIndex();
+            return;
+        }
+        if ($method === 'GET' && $id) {
+            $this->faqController->adminShow($id);
+            return;
+        }
+        if ($method === 'POST') {
+            $this->faqController->adminCreate($body);
+            return;
+        }
+        if (($method === 'PATCH' || $method === 'PUT') && $id) {
+            $this->faqController->adminUpdate($id, $body);
+            return;
+        }
+        if ($method === 'DELETE' && $id) {
+            $this->faqController->adminDelete($id);
+            return;
+        }
+
+        Response::error("Método no permitido", 405);
+    }
+
+    private function handleValoraciones(string $method, array $segments, array $body): void {
+        $id = $this->numericId($segments[2] ?? null);
+        $action = $segments[3] ?? '';
+
+        if ($method === 'GET' && !$id) {
+            Response::json(['success' => true, 'data' => $this->testimonioModel->listAdmin()]);
+            return;
+        }
+
+        if (!$id) {
+            Response::error("ID de valoración inválido", 400);
+            return;
+        }
+
+        if ($method === 'GET') {
+            $valoracion = $this->testimonioModel->getById($id);
+            if (!$valoracion) {
+                Response::error("Valoración no encontrada", 404);
+                return;
+            }
+            Response::json(['success' => true, 'data' => $valoracion]);
+            return;
+        }
+
+        if ($method === 'PATCH' && $action === 'estado') {
+            $data = $this->validateValoracionAdmin($body, true);
+            if (isset($data['error'])) {
+                Response::error($data['error'], 400);
+                return;
+            }
+            $this->testimonioModel->update($id, $data);
+            Response::json([
+                'success' => true,
+                'message' => 'Estado de valoración actualizado',
+                'data' => $this->testimonioModel->getById($id),
+            ]);
+            return;
+        }
+
+        if ($method === 'PATCH') {
+            $data = $this->validateValoracionAdmin($body, false);
+            if (isset($data['error'])) {
+                Response::error($data['error'], 400);
+                return;
+            }
+            if (empty($data)) {
+                Response::error("No hay campos válidos para actualizar", 400);
+                return;
+            }
+            $this->testimonioModel->update($id, $data);
+            Response::json([
+                'success' => true,
+                'message' => 'Valoración actualizada',
+                'data' => $this->testimonioModel->getById($id),
+            ]);
+            return;
+        }
+
+        if ($method === 'DELETE') {
+            if (!$this->testimonioModel->getById($id)) {
+                Response::error("Valoración no encontrada", 404);
+                return;
+            }
+            $this->testimonioModel->softDelete($id);
+            Response::json(['success' => true, 'message' => 'Valoración desactivada']);
+            return;
+        }
+
+        Response::error("Método no permitido", 405);
+    }
+
+    private function validateValoracionAdmin(array $body, bool $requireEstado): array {
+        $data = [];
+        $hasVisibility = array_key_exists('visible', $body) || array_key_exists('publicada', $body);
+
+        if ($requireEstado || array_key_exists('estado', $body)) {
+            $estado = trim((string)($body['estado'] ?? ''));
+            if ($estado === 'aprobada') {
+                $estado = 'aprobado';
+            }
+            if (!in_array($estado, ['pendiente', 'aprobado', 'rechazado'], true)) {
+                return ['error' => 'Estado inválido'];
+            }
+            $data['estado'] = $estado;
+
+            if ($estado === 'aprobado' && !$hasVisibility) {
+                $data['visible'] = 1;
+                $data['activo'] = 1;
+            } elseif ($estado !== 'aprobado' && !$hasVisibility) {
+                $data['visible'] = 0;
+            }
+        }
+
+        if ($hasVisibility) {
+            $data['visible'] = filter_var($body['visible'] ?? $body['publicada'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+            $data['activo'] = $data['visible'] ? 1 : 0;
+        }
+        if (array_key_exists('respuesta_admin', $body)) {
+            $data['respuesta_admin'] = $this->optionalText($body['respuesta_admin']);
+        }
+        if (array_key_exists('nombre_mostrado', $body)) {
+            $nombre = trim((string)$body['nombre_mostrado']);
+            if ($nombre === '') {
+                return ['error' => 'Nombre mostrado inválido'];
+            }
+            $data['nombre_mostrado'] = $nombre;
+        }
+        if (array_key_exists('comentario', $body)) {
+            $comentario = trim((string)$body['comentario']);
+            if ($comentario === '') {
+                return ['error' => 'Comentario inválido'];
+            }
+            $data['comentario'] = $comentario;
+        }
+        if (array_key_exists('puntuacion', $body)) {
+            $puntuacion = (int)$body['puntuacion'];
+            if ($puntuacion < 1 || $puntuacion > 5) {
+                return ['error' => 'Puntuación inválida'];
+            }
+            $data['puntuacion'] = $puntuacion;
+        }
+
+        return $data;
     }
 
     private function createDisponibilidad(array $body, bool $forceBloqueo): void {

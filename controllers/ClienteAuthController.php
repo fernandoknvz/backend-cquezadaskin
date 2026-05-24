@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../models/ClienteModel.php';
 require_once __DIR__ . '/../models/CitaModel.php';
 require_once __DIR__ . '/../models/DisponibilidadModel.php';
+require_once __DIR__ . '/../models/TestimonioModel.php';
 require_once __DIR__ . '/../utils/Response.php';
 require_once __DIR__ . '/../utils/JwtConfig.php';
 require_once __DIR__ . '/../utils/RutValidator.php';
@@ -14,12 +15,14 @@ class ClienteAuthController {
     private $model;
     private $citaModel;
     private $disponibilidadModel;
+    private $testimonioModel;
     private $jwt_secret;
 
     public function __construct($pdo) {
         $this->model = new ClienteModel($pdo);
         $this->citaModel = new CitaModel($pdo);
         $this->disponibilidadModel = new DisponibilidadModel($pdo);
+        $this->testimonioModel = new TestimonioModel($pdo);
         $this->jwt_secret = JwtConfig::secret();
     }
 
@@ -360,6 +363,71 @@ class ClienteAuthController {
             'success' => true,
             'message' => 'Reserva reagendada',
             'data' => $this->citaModel->getClienteReservaById($reservaId, $clienteId),
+        ]);
+    }
+
+    public function crearValoracion($authUser, array $body) {
+        $clienteId = $this->resolveClienteId($authUser);
+        if (!$clienteId) {
+            return Response::error("Cliente no autorizado", 401);
+        }
+
+        $cliente = $this->model->getById($clienteId);
+        if (!$cliente) {
+            return Response::error("Cliente no encontrado", 404);
+        }
+
+        $comentario = trim((string)($body['comentario'] ?? ''));
+        $puntuacion = (int)($body['puntuacion'] ?? 0);
+        $nombreMostrado = trim((string)($body['nombre_mostrado'] ?? $cliente['nombre'] ?? 'Cliente'));
+        $citaId = isset($body['cita_id']) && $body['cita_id'] !== '' ? (int)$body['cita_id'] : null;
+
+        if ($comentario === '') {
+            return Response::error("Comentario requerido", 400);
+        }
+        if ($puntuacion < 1 || $puntuacion > 5) {
+            return Response::error("Puntuación debe estar entre 1 y 5", 400);
+        }
+        if ($nombreMostrado === '') {
+            return Response::error("Nombre mostrado inválido", 400);
+        }
+
+        if ($citaId !== null) {
+            $reserva = $this->citaModel->getClienteReservaById($citaId, $clienteId);
+            if ($reserva === null) {
+                return Response::error("Reserva no encontrada", 404);
+            }
+            if ($reserva === false) {
+                return Response::error("No puedes valorar una reserva ajena", 403);
+            }
+            if (($reserva['estado'] ?? '') !== 'completada') {
+                return Response::error("Solo puedes valorar reservas completadas", 400);
+            }
+        }
+
+        $id = $this->testimonioModel->createClienteValoracion($clienteId, [
+            'cita_id' => $citaId,
+            'puntuacion' => $puntuacion,
+            'comentario' => $comentario,
+            'nombre_mostrado' => $nombreMostrado,
+        ]);
+
+        Response::json([
+            'success' => true,
+            'message' => 'Valoración recibida y pendiente de moderación',
+            'data' => $this->testimonioModel->getById($id),
+        ], 201);
+    }
+
+    public function listarValoraciones($authUser) {
+        $clienteId = $this->resolveClienteId($authUser);
+        if (!$clienteId) {
+            return Response::error("Cliente no autorizado", 401);
+        }
+
+        Response::json([
+            'success' => true,
+            'data' => $this->testimonioModel->listByCliente($clienteId),
         ]);
     }
 

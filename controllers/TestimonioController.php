@@ -19,7 +19,7 @@ class TestimonioController {
             switch ($method) {
                 case 'GET':
                     if (isset($params['id'])) {
-                        $data = $this->model->getById($params['id']);
+                        $data = $this->model->getPublicById($params['id']);
                     } else {
                         $data = $this->model->getAll();
                     }
@@ -30,6 +30,8 @@ class TestimonioController {
                     if (trim((string)($body['nombre'] ?? '')) === '' || trim((string)($body['texto'] ?? '')) === '') {
                         return Response::error("Nombre y texto requeridos", 400);
                     }
+                    $body['visible'] = array_key_exists('visible', $body) ? $body['visible'] : true;
+                    $body['estado'] = $body['estado'] ?? 'aprobado';
                     $id = $this->model->create($body);
                     Response::json(["message" => "Testimonio creado", "id" => $id]);
                     break;
@@ -43,7 +45,7 @@ class TestimonioController {
 
                 case 'DELETE':
                     if (!isset($params['id'])) return Response::error("ID requerido");
-                    $this->model->delete($params['id']);
+                    $this->model->softDelete($params['id']);
                     Response::json(["message" => "Testimonio eliminado"]);
                     break;
 

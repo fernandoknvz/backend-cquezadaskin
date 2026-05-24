@@ -135,6 +135,14 @@ switch ($resource) {
         require __DIR__ . '/routes/testimonios.php';
         break;
 
+    case 'valoraciones':
+        require __DIR__ . '/routes/testimonios.php';
+        break;
+
+    case 'faq':
+        require __DIR__ . '/routes/faq.php';
+        break;
+
     case 'nosotros':
         require __DIR__ . '/routes/sobreNosotros.php';
         break;

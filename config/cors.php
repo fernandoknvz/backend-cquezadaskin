@@ -19,6 +19,8 @@ if ($envOrigins !== '') {
 }
 
 $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
+$allowedMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+$allowedHeaders = ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'];
 
 if ($origin && in_array($origin, $allowed_origins, true)) {
     header("Access-Control-Allow-Origin: $origin");
@@ -26,11 +28,12 @@ if ($origin && in_array($origin, $allowed_origins, true)) {
     header("Vary: Origin");
 }
 
-header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept");
+// CORS centralizado: el preflight debe responder antes de entrar al router.
+header('Access-Control-Allow-Methods: ' . implode(', ', $allowedMethods));
+header('Access-Control-Allow-Headers: ' . implode(', ', $allowedHeaders));
 header("Content-Type: application/json; charset=UTF-8");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
+    http_response_code(204);
     exit();
 }

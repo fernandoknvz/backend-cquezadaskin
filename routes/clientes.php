@@ -66,4 +66,16 @@ if ($method === 'PATCH' && $action === 'reservas' && $id && $subaction === 'reag
     exit;
 }
 
+if ($method === 'POST' && $action === 'valoraciones') {
+    $authUser = ClientAuthMiddleware::verify($pdo);
+    $controller->crearValoracion($authUser, $body);
+    exit;
+}
+
+if ($method === 'GET' && $action === 'valoraciones') {
+    $authUser = ClientAuthMiddleware::verify($pdo);
+    $controller->listarValoraciones($authUser);
+    exit;
+}
+
 Response::error("Ruta de clientes no encontrada", 404);
