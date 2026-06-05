@@ -28,21 +28,14 @@ class DisponibilidadController {
                     );
 
                     if (!$fecha && !$desde && !$hasta) {
-                        $desde = date('Y-m-d');
-                        $hasta = date('Y-m-d', strtotime('+30 days'));
+                        $now = new DateTime('now', new DateTimeZone('America/Santiago'));
+                        $desde = $now->format('Y-m-d');
+                        $hasta = $now->modify('+30 days')->format('Y-m-d');
                         $modo = 'dias';
                     }
 
                     if ($fecha) {
-                        $minHora = null;
-                                    
-                        // Regla operativa: para hoy, solo mostrar horas con al menos 2 horas de anticipación
-                        if ($fecha === date('Y-m-d')) {
-                            $minHora = date('H:i:s', time() + (2 * 60 * 60));
-                        }
-                                    
-                        $horas = $this->model->getAvailableTimesByDate($fecha, $minHora);
-                                    
+                        $horas = $this->availableTimesForPublicDate($fecha);
                         Response::json([
                             "fecha" => $fecha,
                             "horas" => $horas
@@ -97,6 +90,24 @@ class DisponibilidadController {
         } catch (Exception $e) {
             Response::error("Error interno: " . $e->getMessage(), 500);
         }
+    }
+
+    private function availableTimesForPublicDate(string $fecha): array {
+        $now = new DateTime('now', new DateTimeZone('America/Santiago'));
+        $today = $now->format('Y-m-d');
+
+        if ($fecha < $today) {
+            return [];
+        }
+
+        $minHora = null;
+        if ($fecha === $today) {
+            $minTime = clone $now;
+            $minTime->modify('+1 hour');
+            $minHora = $minTime->format('H:i:s');
+        }
+
+        return $this->model->getAvailableTimesByDate($fecha, $minHora);
     }
 
     private function normalizeDate($value) {

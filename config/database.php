@@ -52,6 +52,9 @@ if (!function_exists('loadEnv')) {
 // === Cargar variables desde .env (raíz del proyecto) ===
 loadEnv(__DIR__ . '/../.env');
 
+$appEnv = strtolower((string)(getenv('APP_ENV') ?: ($_ENV['APP_ENV'] ?? $_SERVER['APP_ENV'] ?? 'local')));
+$isProduction = $appEnv === 'production';
+
 // Defaults seguros
 $host = getenv('DB_HOST') ?: '127.0.0.1';
 $port = getenv('DB_PORT') ?: '3306';
@@ -68,7 +71,7 @@ $charset = trim($charset);
 if ($db === '') {
     http_response_code(500);
     header('Content-Type: application/json; charset=UTF-8');
-    echo json_encode(["error" => "DB_NAME no está definido en .env"]);
+    echo json_encode(["error" => "DB_NAME no esta definido"]);
     exit;
 }
 
@@ -97,11 +100,15 @@ try {
     http_response_code(500);
     header('Content-Type: application/json; charset=UTF-8');
 
-    // No exponer credenciales/host en respuesta (seguridad)
-    echo json_encode([
-        "error" => "Error de conexión con la base de datos",
-        "detail" => $e->getMessage(), // si quieres ocultarlo en prod, lo quitamos luego con APP_DEBUG
-    ]);
+    $response = [
+        "error" => "Error de conexion con la base de datos",
+    ];
+
+    if (!$isProduction) {
+        $response["detail"] = $e->getMessage();
+    }
+
+    echo json_encode($response);
 
     exit;
 }

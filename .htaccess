@@ -1,23 +1,28 @@
-# ========================================== 
+# ==========================================
 # CQuezadaSkin Backend (PHP API Router)
 # ==========================================
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
 
-  # 🔐 Corrige pérdida del header Authorization (para JWT)
+  # Preserve Authorization header for JWT on Apache.
   SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
   RewriteCond %{HTTP:Authorization} .
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
-  # ✅ Redirige todas las rutas /api/... hacia index.php
+  # Block sensitive files and folders if they exist inside the document root.
+  RewriteRule (^|/)(\.git|migrations)(/|$) - [F,L]
+  RewriteRule (^|/)(\.env|composer\.(json|lock)|.*\.sql|.*\.log|error_log\.txt|_pdo_test\.php|_whereami\.php|debug_env_mail\.php)$ - [F,L,NC]
+
+  # Route all /api/... requests to the single PHP router.
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
   RewriteRule ^api(/.*)?$ index.php [L,QSA]
 </IfModule>
 
-# ✅ Forzar salida JSON por defecto
-AddType application/json .php
+<FilesMatch "(^\.env$|^composer\.(json|lock)$|.*\.sql$|.*\.log$|^error_log\.txt$|^_pdo_test\.php$|^_whereami\.php$|^debug_env_mail\.php$)">
+  Require all denied
+</FilesMatch>
 
-# 🚫 Evita listar directorios
+AddType application/json .php
 Options -Indexes

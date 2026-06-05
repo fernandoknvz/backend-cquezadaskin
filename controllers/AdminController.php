@@ -278,6 +278,35 @@ class AdminController {
     }
 
     private function handleDisponibilidad(string $method, array $segments, array $params, array $body): void {
+        $action = $segments[2] ?? '';
+
+        if ($action === 'bulk') {
+            if ($method !== 'POST') {
+                Response::error("Metodo no permitido", 405);
+                return;
+            }
+            $this->createDisponibilidadBulk($body);
+            return;
+        }
+
+        if ($action === 'habilitar-bulk') {
+            if ($method !== 'POST') {
+                Response::error("Metodo no permitido", 405);
+                return;
+            }
+            $this->habilitarDisponibilidadBulk($body);
+            return;
+        }
+
+        if ($action === 'habilitar-dia' || $action === 'bloquear-dia') {
+            if ($method !== 'POST') {
+                Response::error("Metodo no permitido", 405);
+                return;
+            }
+            $this->updateDisponibilidadDia($body, $action === 'habilitar-dia');
+            return;
+        }
+
         $id = $this->numericId($segments[2] ?? null);
 
         if ($method === 'GET') {
@@ -511,6 +540,17 @@ class AdminController {
             return;
         }
 
+        if ($disponible && $this->disponibilidadModel->hasActiveBooking($fecha, $hora)) {
+            Response::json([
+                'ok' => false,
+                'success' => false,
+                'mensaje' => 'Este horario ya fue reservado',
+                'message' => 'Este horario ya fue reservado',
+                'error' => 'Este horario ya fue reservado',
+            ], 409);
+            return;
+        }
+
         if (!$disponible && $this->disponibilidadModel->hasActiveBooking($fecha, $hora)) {
             Response::error("No se puede bloquear un horario con reserva activa", 409);
             return;
@@ -522,6 +562,221 @@ class AdminController {
             'message' => $tipo === 'bloqueo' ? 'Bloqueo guardado' : 'Disponibilidad guardada',
             'data' => $this->disponibilidadModel->getById($id),
         ], 201);
+    }
+
+    private function createDisponibilidadBulk(array $body): void {
+        $validation = $this->validateDisponibilidadBulk($body);
+        if (isset($validation['error'])) {
+            Response::json([
+                'ok' => false,
+                'success' => false,
+                'creados' => 0,
+                'omitidos' => 0,
+                'con_reserva' => 0,
+                'errores' => [$validation['error']],
+                'mensaje' => $validation['error'],
+                'message' => $validation['error'],
+                'error' => $validation['error'],
+            ], 400);
+            return;
+        }
+
+        $fecha = $validation['fecha'];
+        $tipo = $validation['estado'];
+        $disponible = $tipo === 'disponible';
+        $horas = $this->buildBulkSlots(
+            $validation['hora_inicio'],
+            $validation['hora_fin'],
+            $validation['intervalo_minutos']
+        );
+
+        if (empty($horas)) {
+            Response::json([
+                'ok' => false,
+                'success' => false,
+                'creados' => 0,
+                'omitidos' => 0,
+                'con_reserva' => 0,
+                'errores' => ['No hay slots validos para crear'],
+                'mensaje' => 'No hay slots validos para crear',
+                'message' => 'No hay slots validos para crear',
+                'error' => 'No hay slots validos para crear',
+            ], 400);
+            return;
+        }
+
+        $existentes = $this->disponibilidadModel->listExistingTimes($fecha, $horas);
+        $conReserva = $this->disponibilidadModel->listTimesWithActiveBookings($fecha, $horas);
+        $omitidos = count($existentes);
+        $conReservaCount = count($conReserva);
+
+        $bloqueados = array_fill_keys(array_merge($existentes, $conReserva), true);
+        $validos = array_values(array_filter($horas, static function ($hora) use ($bloqueados) {
+            return !isset($bloqueados[$hora]);
+        }));
+
+        $creados = 0;
+        $errores = [];
+
+        if (!empty($validos)) {
+            try {
+                $creados = $this->disponibilidadModel->insertSlots(
+                    $fecha,
+                    $validos,
+                    $disponible,
+                    $validation['motivo'],
+                    $tipo
+                );
+                $omitidos += count($validos) - $creados;
+            } catch (PDOException $e) {
+                $errores[] = 'Error al crear disponibilidad masiva';
+            }
+        }
+
+        Response::json([
+            'ok' => empty($errores),
+            'success' => empty($errores),
+            'creados' => $creados,
+            'omitidos' => $omitidos,
+            'con_reserva' => $conReservaCount,
+            'errores' => $errores,
+            'mensaje' => empty($errores)
+                ? 'Disponibilidad creada correctamente'
+                : 'Disponibilidad creada parcialmente',
+        ], empty($errores) ? 201 : 500);
+    }
+
+    private function habilitarDisponibilidadBulk(array $body): void {
+        $validation = $this->validateHabilitarDisponibilidadBulk($body);
+        if (isset($validation['error'])) {
+            Response::json([
+                'ok' => false,
+                'mensaje' => 'fecha, hora_inicio y hora_fin validas son requeridas',
+                'errores' => [],
+            ], 400);
+            return;
+        }
+
+        $fecha = $validation['fecha'];
+        $horas = $this->buildBulkSlots(
+            $validation['hora_inicio'],
+            $validation['hora_fin'],
+            $validation['intervalo_minutos']
+        );
+
+        if (empty($horas)) {
+            Response::json([
+                'ok' => false,
+                'mensaje' => 'fecha, hora_inicio y hora_fin validas son requeridas',
+                'errores' => [],
+            ], 400);
+            return;
+        }
+
+        $conReserva = $this->disponibilidadModel->listTimesWithActiveBookings($fecha, $horas);
+        $conReservaMap = array_fill_keys($conReserva, true);
+        $horasSinReserva = array_values(array_filter($horas, static function ($hora) use ($conReservaMap) {
+            return !isset($conReservaMap[$hora]);
+        }));
+
+        $slotsExistentes = $this->disponibilidadModel->listSlotsByTimes($fecha, $horasSinReserva);
+        $yaDisponibles = 0;
+        $horasParaActualizar = [];
+        $existentesMap = [];
+
+        foreach ($slotsExistentes as $slot) {
+            $hora = $slot['hora'];
+            $existentesMap[$hora] = true;
+
+            if ((int)($slot['activo'] ?? 0) === 1 && ($slot['tipo'] ?? '') === 'disponible') {
+                $yaDisponibles++;
+                continue;
+            }
+
+            $horasParaActualizar[] = $hora;
+        }
+
+        $horasParaCrear = array_values(array_filter($horasSinReserva, static function ($hora) use ($existentesMap) {
+            return !isset($existentesMap[$hora]);
+        }));
+
+        $actualizados = 0;
+        $creados = 0;
+
+        try {
+            if (!empty($horasParaActualizar)) {
+                $actualizados = $this->disponibilidadModel->enableSlots($fecha, $horasParaActualizar, $validation['motivo']);
+            }
+
+            if (!empty($horasParaCrear)) {
+                $creados = $this->disponibilidadModel->insertSlots($fecha, $horasParaCrear, true, $validation['motivo'], 'disponible');
+            }
+        } catch (PDOException $e) {
+            Response::json([
+                'ok' => false,
+                'actualizados' => $actualizados,
+                'creados' => $creados,
+                'omitidos' => $yaDisponibles,
+                'con_reserva' => count($conReserva),
+                'errores' => ['Error al habilitar disponibilidad masiva'],
+                'mensaje' => 'Error al habilitar disponibilidad masiva',
+            ], 500);
+            return;
+        }
+
+        $omitidos = $yaDisponibles + count($horasParaActualizar) - $actualizados + count($horasParaCrear) - $creados;
+
+        Response::json([
+            'ok' => true,
+            'actualizados' => $actualizados,
+            'creados' => $creados,
+            'omitidos' => $omitidos,
+            'con_reserva' => count($conReserva),
+            'mensaje' => 'Horarios habilitados correctamente',
+        ]);
+    }
+
+    private function updateDisponibilidadDia(array $body, bool $habilitar): void {
+        $fecha = $this->normalizeDate($body['fecha'] ?? null);
+        if (!$fecha) {
+            Response::json([
+                'ok' => false,
+                'mensaje' => 'fecha valida es requerida',
+                'errores' => ['fecha debe tener formato YYYY-MM-DD'],
+            ], 400);
+            return;
+        }
+
+        $slots = $this->disponibilidadModel->listDaySlots($fecha);
+        if (empty($slots)) {
+            Response::json([
+                'ok' => false,
+                'actualizados' => 0,
+                'omitidos' => 0,
+                'con_reserva' => 0,
+                'mensaje' => 'No hay horarios creados para este dia',
+            ]);
+            return;
+        }
+
+        $conReserva = 0;
+        foreach ($slots as $slot) {
+            $ocupada = (int)($slot['ocupada'] ?? 0) === 1;
+            if ($ocupada) {
+                $conReserva++;
+            }
+        }
+
+        $actualizados = $this->disponibilidadModel->setDayAvailability($fecha, $habilitar);
+        $omitidos = count($slots) - $conReserva - $actualizados;
+
+        Response::json([
+            'ok' => true,
+            'actualizados' => $actualizados,
+            'omitidos' => $omitidos,
+            'con_reserva' => $conReserva,
+            'mensaje' => $habilitar ? 'Dia habilitado correctamente' : 'Dia bloqueado correctamente',
+        ]);
     }
 
     private function updateDisponibilidad(int $id, array $body): void {
@@ -571,6 +826,21 @@ class AdminController {
 
         if ($willBeUnavailable && $this->disponibilidadModel->hasActiveBooking($fecha, $hora)) {
             Response::error("No se puede bloquear un horario con reserva activa", 409);
+            return;
+        }
+
+        $willBeAvailable = array_key_exists('disponible', $data)
+            ? (bool)$data['disponible']
+            : ((int)($slot['disponible'] ?? 0) === 1 && ($data['tipo'] ?? $slot['tipo'] ?? '') === 'disponible');
+
+        if ($willBeAvailable && $this->disponibilidadModel->hasActiveBooking($fecha, $hora)) {
+            Response::json([
+                'ok' => false,
+                'success' => false,
+                'mensaje' => 'Este horario ya fue reservado',
+                'message' => 'Este horario ya fue reservado',
+                'error' => 'Este horario ya fue reservado',
+            ], 409);
             return;
         }
 
@@ -786,6 +1056,102 @@ class AdminController {
         $time = DateTime::createFromFormat('H:i', $value)
             ?: DateTime::createFromFormat('H:i:s', $value);
         return $time ? $time->format('H:i:s') : null;
+    }
+
+    private function validateDisponibilidadBulk(array $body): array {
+        $fecha = $this->normalizeDate($body['fecha'] ?? null);
+        if (!$fecha) {
+            return ['error' => 'fecha obligatoria en formato YYYY-MM-DD'];
+        }
+
+        $horaInicio = $this->normalizeBulkTime($body['hora_inicio'] ?? null);
+        if (!$horaInicio) {
+            return ['error' => 'hora_inicio obligatoria en formato HH:mm'];
+        }
+
+        $horaFin = $this->normalizeBulkTime($body['hora_fin'] ?? null);
+        if (!$horaFin) {
+            return ['error' => 'hora_fin obligatoria en formato HH:mm'];
+        }
+
+        if ($horaFin <= $horaInicio) {
+            return ['error' => 'hora_fin debe ser mayor que hora_inicio'];
+        }
+
+        $intervalo = (int)($body['intervalo_minutos'] ?? 0);
+        if (!in_array($intervalo, [15, 30, 45, 60], true)) {
+            return ['error' => 'intervalo_minutos debe ser 15, 30, 45 o 60'];
+        }
+
+        $estado = trim((string)($body['estado'] ?? ''));
+        if (!in_array($estado, ['disponible', 'bloqueo'], true)) {
+            return ['error' => 'estado invalido'];
+        }
+
+        return [
+            'fecha' => $fecha,
+            'hora_inicio' => $horaInicio,
+            'hora_fin' => $horaFin,
+            'intervalo_minutos' => $intervalo,
+            'estado' => $estado,
+            'motivo' => $this->optionalText($body['motivo'] ?? null),
+        ];
+    }
+
+    private function validateHabilitarDisponibilidadBulk(array $body): array {
+        $fecha = $this->normalizeDate($body['fecha'] ?? null);
+        $horaInicio = $this->normalizeBulkTime($body['hora_inicio'] ?? null);
+        $horaFin = $this->normalizeBulkTime($body['hora_fin'] ?? null);
+
+        if (!$fecha || !$horaInicio || !$horaFin) {
+            return ['error' => 'fecha, hora_inicio y hora_fin validas son requeridas'];
+        }
+
+        if ($horaFin <= $horaInicio) {
+            return ['error' => 'hora_fin debe ser mayor que hora_inicio'];
+        }
+
+        $intervalo = (int)($body['intervalo_minutos'] ?? 0);
+        if (!in_array($intervalo, [15, 30, 45, 60], true)) {
+            return ['error' => 'intervalo_minutos debe ser 15, 30, 45 o 60'];
+        }
+
+        return [
+            'fecha' => $fecha,
+            'hora_inicio' => $horaInicio,
+            'hora_fin' => $horaFin,
+            'intervalo_minutos' => $intervalo,
+            'motivo' => $this->optionalText($body['motivo'] ?? null),
+        ];
+    }
+
+    private function normalizeBulkTime($value): ?string {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $value)) {
+            return null;
+        }
+
+        return $value . ':00';
+    }
+
+    private function buildBulkSlots(string $horaInicio, string $horaFin, int $intervaloMinutos): array {
+        $current = DateTime::createFromFormat('H:i:s', $horaInicio);
+        $end = DateTime::createFromFormat('H:i:s', $horaFin);
+        if (!$current || !$end) {
+            return [];
+        }
+
+        $slots = [];
+        while ($current < $end) {
+            $slots[] = $current->format('H:i:s');
+            $current->modify('+' . $intervaloMinutos . ' minutes');
+        }
+
+        return $slots;
     }
 
     private function optionalText($value): ?string {

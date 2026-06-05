@@ -6,7 +6,7 @@ class CitaModel {
         $this->pdo = $pdo;
     }
 
-    // ✅ Obtener todas las citas
+    // âœ… Obtener todas las citas
     public function getAll() {
         $sql = "SELECT c.id, c.cliente_id, c.servicio_id,
                        cli.nombre AS cliente, cli.correo, cli.telefono,
@@ -171,7 +171,7 @@ class CitaModel {
                 FROM citas
                 WHERE DATE(fecha) = :fecha
                   AND hora = :hora
-                  AND estado IN ('solicitada','pendiente','confirmada','reagendada')";
+                  AND estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')";
         if ($excludeId !== null) {
             $sql .= " AND id != :exclude_id";
             $params[':exclude_id'] = $excludeId;
@@ -275,7 +275,7 @@ class CitaModel {
         return $stmt->rowCount() > 0;
     }
 
-    // ✅ Crear nueva cita
+    // âœ… Crear nueva cita
     public function create($clienteId, $servicioId, $fecha, $hora = null, $estado = null) {
         if ($estado !== null) {
             $sql = "INSERT INTO citas (cliente_id, servicio_id, fecha, hora, estado)
@@ -481,3 +481,4 @@ class CitaModel {
         return $stmt->rowCount() > 0;
     }
 }
+

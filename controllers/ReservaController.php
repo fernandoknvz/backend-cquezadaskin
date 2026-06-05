@@ -49,27 +49,42 @@ class ReservaController {
             return Response::error("Servicio no disponible para reserva", 422);
         }
 
-        $startTs = strtotime($fecha . ' ' . $hora);
-        if ($startTs === false) {
+        $startAt = $this->makeChileDateTime($fecha, $hora);
+        if (!$startAt) {
             return Response::error("Fecha u hora invalida", 400);
         }
 
-        $now = time();
-        if ($fecha === date('Y-m-d') && $startTs < ($now + (2 * 60 * 60))) {
-            return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 2 horas de anticipacion", 400);
+        $now = new DateTimeImmutable('now', new DateTimeZone('America/Santiago'));
+        $today = $now->format('Y-m-d');
+        if ($fecha < $today) {
+            return Response::error("No se puede reservar en horarios pasados", 400);
         }
 
-        if ($startTs < ($now - 60)) {
+        if ($fecha === $today && $startAt < $now->modify('+1 hour')) {
+            return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 1 hora de anticipación", 400);
+        }
+
+        if ($startAt < $now) {
             return Response::error("No se puede reservar en horarios pasados", 400);
         }
 
         $blocks = (int)($duracionMin / 30);
         $slots = [];
         for ($i = 0; $i < $blocks; $i++) {
-            $slots[] = date('H:i:s', $startTs + ($i * 30 * 60));
+            $slots[] = $startAt->modify('+' . ($i * 30) . ' minutes')->format('H:i:s');
         }
 
         foreach ($slots as $slotHora) {
+            if ($this->citaModel->hasActiveConflict($fecha, $slotHora)) {
+                return Response::json([
+                    'ok' => false,
+                    'success' => false,
+                    'mensaje' => 'Este horario ya fue reservado',
+                    'message' => 'Este horario ya fue reservado',
+                    'error' => 'Este horario ya fue reservado',
+                ], 409);
+            }
+
             if (!$this->disponibilidadModel->isSlotAvailable($fecha, $slotHora)) {
                 return Response::error("Horario no disponible para {$duracionMin} minutos", 409);
             }
@@ -127,6 +142,16 @@ class ReservaController {
         $endTs = strtotime($fecha . ' ' . $lastSlot);
 
         return $endTs !== false ? date('H:i:s', $endTs + (30 * 60)) : '';
+    }
+
+    private function makeChileDateTime(string $fecha, string $hora): ?DateTimeImmutable {
+        $dateTime = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $hora,
+            new DateTimeZone('America/Santiago')
+        );
+
+        return $dateTime instanceof DateTimeImmutable ? $dateTime : null;
     }
 
     private function notifyBookingReceived(array $cliente, array $servicio, string $fecha, string $hora, string $horaFin, int $duracionMin, int $servicioId, array $citaIds): void {

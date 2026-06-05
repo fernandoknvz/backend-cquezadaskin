@@ -2,3 +2,4 @@
 .env
 error_log.txt
 *.log
+vendor/

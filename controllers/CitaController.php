@@ -56,21 +56,23 @@ class CitaController {
                         return Response::error("Fecha inválida", 400);
                     }
 
-                    $startTs = strtotime($fechaKey . ' ' . $hora);
-                    if ($startTs === false) {
+                    $startAt = $this->makeChileDateTime($fechaKey, $hora);
+                    if (!$startAt) {
                         return Response::error("Hora inválida", 400);
                     }
 
-                    // Regla operativa: si la reserva es para hoy, debe ser con al menos 2 horas de anticipación
-                    $now = time();
-                    $fechaHoy = date('Y-m-d');
-                    $margenMinimoSegundos = 2 * 60 * 60;
-                                    
-                    if ($fechaKey === $fechaHoy && $startTs < ($now + $margenMinimoSegundos)) {
-                        return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 2 horas de anticipación", 400);
+                    $now = new DateTimeImmutable('now', new DateTimeZone('America/Santiago'));
+                    $fechaHoy = $now->format('Y-m-d');
+
+                    if ($fechaKey < $fechaHoy) {
+                        return Response::error("No se puede agendar en horarios pasados", 400);
                     }
                                     
-                    if ($startTs < ($now - 60)) {
+                    if ($fechaKey === $fechaHoy && $startAt < $now->modify('+1 hour')) {
+                        return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 1 hora de anticipación", 400);
+                    }
+                                    
+                    if ($startAt < $now) {
                         return Response::error("No se puede agendar en horarios pasados", 400);
                     }
 
@@ -79,7 +81,7 @@ class CitaController {
                     // Generar slots consecutivos (H:i:s)
                     $slots = [];
                     for ($i = 0; $i < $blocks; $i++) {
-                        $slots[] = date('H:i:s', $startTs + ($i * 30 * 60));
+                        $slots[] = $startAt->modify('+' . ($i * 30) . ' minutes')->format('H:i:s');
                     }
 
                     $horaFin = '';
@@ -93,6 +95,16 @@ class CitaController {
 
                     // Validar disponibilidad de todos los slots
                     foreach ($slots as $slotHora) {
+                        if ($this->citaModel->hasActiveConflict($fechaKey, $slotHora)) {
+                            return Response::json([
+                                'ok' => false,
+                                'success' => false,
+                                'mensaje' => 'Este horario ya fue reservado',
+                                'message' => 'Este horario ya fue reservado',
+                                'error' => 'Este horario ya fue reservado',
+                            ], 409);
+                        }
+
                         if (!$this->disponibilidadModel->isSlotAvailable($fechaKey, $slotHora)) {
                             return Response::error("Horario no disponible para {$duracionMin} minutos", 409);
                         }
@@ -397,5 +409,15 @@ class CitaController {
         } catch (Exception $e) {
             Response::error("Error interno: " . $e->getMessage(), 500);
         }
+    }
+
+    private function makeChileDateTime(string $fecha, string $hora): ?DateTimeImmutable {
+        $dateTime = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $hora,
+            new DateTimeZone('America/Santiago')
+        );
+
+        return $dateTime instanceof DateTimeImmutable ? $dateTime : null;
     }
 }

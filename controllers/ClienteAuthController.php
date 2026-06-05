@@ -306,7 +306,7 @@ class ClienteAuthController {
         }
 
         if ($this->isTooSoon($reserva['fecha'], $reserva['hora'])) {
-            return Response::error("No puedes cancelar una reserva con menos de 2 horas de anticipación", 400);
+            return Response::error("No puedes cancelar una reserva con menos de 1 hora de anticipación", 400);
         }
 
         $motivo = $this->optionalText($body['motivo'] ?? null);
@@ -346,7 +346,7 @@ class ClienteAuthController {
         }
 
         if ($this->isTooSoon($fecha, $hora)) {
-            return Response::error("Debes escoger un horario con al menos 2 horas de anticipación", 400);
+            return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 1 hora de anticipación", 400);
         }
 
         if ($this->citaModel->hasActiveConflict($fecha, $hora, $reservaId)) {
@@ -501,8 +501,21 @@ class ClienteAuthController {
     }
 
     private function isTooSoon(string $fecha, string $hora): bool {
-        $ts = strtotime($fecha . ' ' . $hora);
-        return $ts === false || $ts < (time() + (2 * 60 * 60));
+        $startAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $hora,
+            new DateTimeZone('America/Santiago')
+        );
+        if (!$startAt) {
+            return true;
+        }
+
+        $now = new DateTimeImmutable('now', new DateTimeZone('America/Santiago'));
+        if ($fecha < $now->format('Y-m-d')) {
+            return true;
+        }
+
+        return $fecha === $now->format('Y-m-d') && $startAt < $now->modify('+1 hour');
     }
 
 }

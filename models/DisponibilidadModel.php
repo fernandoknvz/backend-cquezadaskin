@@ -1,7 +1,7 @@
 <?php
 class DisponibilidadModel {
     private $pdo;
-    private const ESTADOS_OCUPADOS = ['solicitada', 'pendiente', 'confirmada', 'reagendada'];
+    private const ESTADOS_OCUPADOS = ['solicitada', 'pendiente', 'confirmada', 'reagendada', 'aprobada'];
 
     public function __construct($pdo) {
         $this->pdo = $pdo;
@@ -45,6 +45,145 @@ class DisponibilidadModel {
         return $stmt->rowCount();
     }
 
+    public function listExistingTimes(string $fecha, array $horas): array {
+        if (empty($horas)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($horas), '?'));
+        $sql = "SELECT TIME_FORMAT(hora, '%H:%i:%s') AS hora
+                FROM horarios_disponibles
+                WHERE fecha = ? AND hora IN ($placeholders)";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array_merge([$fecha], $horas));
+
+        return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'hora');
+    }
+
+    public function listTimesWithActiveBookings(string $fecha, array $horas): array {
+        if (empty($horas)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($horas), '?'));
+        $estadosPlaceholders = implode(',', array_fill(0, count(self::ESTADOS_OCUPADOS), '?'));
+        $sql = "SELECT DISTINCT TIME_FORMAT(hora, '%H:%i:%s') AS hora
+                FROM citas
+                WHERE DATE(fecha) = ?
+                  AND hora IN ($placeholders)
+                  AND estado IN ($estadosPlaceholders)";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array_merge([$fecha], $horas, self::ESTADOS_OCUPADOS));
+
+        return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'hora');
+    }
+
+    public function listSlotsByTimes(string $fecha, array $horas): array {
+        if (empty($horas)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($horas), '?'));
+        $sql = "SELECT id, fecha, TIME_FORMAT(hora, '%H:%i:%s') AS hora,
+                       activo, tipo, motivo
+                FROM horarios_disponibles
+                WHERE fecha = ? AND hora IN ($placeholders)";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array_merge([$fecha], $horas));
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function insertSlots(string $fecha, array $horas, bool $disponible, ?string $motivo = null, ?string $tipo = null): int {
+        if (empty($horas)) {
+            return 0;
+        }
+
+        $tipo = $tipo ?: ($disponible ? 'disponible' : 'bloqueo');
+        $values = [];
+        $params = [];
+
+        foreach ($horas as $hora) {
+            $values[] = "(?, ?, ?, ?, ?)";
+            $params[] = $fecha;
+            $params[] = $hora;
+            $params[] = $disponible ? 1 : 0;
+            $params[] = $tipo;
+            $params[] = $motivo;
+        }
+
+        $sql = "INSERT IGNORE INTO horarios_disponibles (fecha, hora, activo, tipo, motivo)
+                VALUES " . implode(', ', $values);
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+
+        return $stmt->rowCount();
+    }
+
+    public function enableSlots(string $fecha, array $horas, ?string $motivo = null): int {
+        if (empty($horas)) {
+            return 0;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($horas), '?'));
+        $sql = "UPDATE horarios_disponibles
+                SET activo = 1, tipo = 'disponible', motivo = ?
+                WHERE fecha = ?
+                  AND hora IN ($placeholders)
+                  AND (activo <> 1 OR tipo <> 'disponible')";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array_merge([$motivo, $fecha], $horas));
+
+        return $stmt->rowCount();
+    }
+
+    public function listDaySlots(string $fecha): array {
+        $sql = "SELECT h.id, h.fecha, TIME_FORMAT(h.hora, '%H:%i:%s') AS hora,
+                       h.activo, h.tipo, h.motivo,
+                       MAX(CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS ocupada
+                FROM horarios_disponibles h
+                LEFT JOIN citas c
+                  ON DATE(c.fecha) = h.fecha
+                 AND c.hora = h.hora
+                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
+                WHERE h.fecha = :fecha
+                GROUP BY h.id, h.fecha, h.hora, h.activo, h.tipo, h.motivo
+                ORDER BY h.hora ASC";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(['fecha' => $fecha]);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function setDayAvailability(string $fecha, bool $disponible, ?string $motivo = null): int {
+        $activo = $disponible ? 1 : 0;
+        $tipo = $disponible ? 'disponible' : 'bloqueo';
+        $sql = "UPDATE horarios_disponibles h
+                SET h.activo = :activo,
+                    h.tipo = :tipo,
+                    h.motivo = :motivo
+                WHERE h.fecha = :fecha
+                  AND (h.activo <> :activo_check OR h.tipo <> :tipo_check)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM citas c
+                      WHERE DATE(c.fecha) = h.fecha
+                        AND c.hora = h.hora
+                        AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
+                  )";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([
+            'activo' => $activo,
+            'tipo' => $tipo,
+            'motivo' => $motivo,
+            'fecha' => $fecha,
+            'activo_check' => $activo,
+            'tipo_check' => $tipo,
+        ]);
+
+        return $stmt->rowCount();
+    }
+
     public function listAdmin(array $filters): array {
         $desde = $filters['fecha_desde'] ?? date('Y-m-d');
         $hasta = $filters['fecha_hasta'] ?? date('Y-m-d', strtotime('+30 days'));
@@ -60,18 +199,40 @@ class DisponibilidadModel {
         }
 
         if ($activo !== null) {
-            $where[] = "h.activo = :activo";
-            $params[':activo'] = $activo;
+            if ($activo === 1) {
+                $where[] = "h.activo = 1";
+                $where[] = "h.tipo = 'disponible'";
+                $where[] = "NOT EXISTS (
+                    SELECT 1 FROM citas cx
+                    WHERE DATE(cx.fecha) = h.fecha
+                      AND cx.hora = h.hora
+                      AND cx.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
+                )";
+            } else {
+                $where[] = "(h.activo <> 1 OR h.tipo <> 'disponible' OR EXISTS (
+                    SELECT 1 FROM citas cx
+                    WHERE DATE(cx.fecha) = h.fecha
+                      AND cx.hora = h.hora
+                      AND cx.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
+                ))";
+            }
         }
 
         $sql = "SELECT h.id, h.fecha, TIME_FORMAT(h.hora, '%H:%i') AS hora,
-                       h.activo AS disponible, h.tipo, h.motivo, h.creado_en, h.updated_at,
+                       CASE WHEN COUNT(c.id) > 0 THEN 0 ELSE h.activo END AS disponible,
+                       h.tipo, h.motivo, h.creado_en, h.updated_at,
+                       CASE
+                           WHEN COUNT(c.id) > 0 THEN 'reservado'
+                           WHEN h.activo = 1 AND h.tipo = 'disponible' THEN 'disponible'
+                           ELSE 'bloqueo'
+                       END AS estado,
+                       MIN(c.id) AS reserva_id,
                        MAX(CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS ocupada
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
                   ON DATE(c.fecha) = h.fecha
                  AND c.hora = h.hora
-                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada')
+                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE " . implode(' AND ', $where) . "
                 GROUP BY h.id, h.fecha, h.hora, h.activo, h.tipo, h.motivo, h.creado_en, h.updated_at
                 ORDER BY h.fecha ASC, h.hora ASC";
@@ -161,7 +322,7 @@ class DisponibilidadModel {
         $sql = "SELECT COUNT(*) FROM citas
                 WHERE DATE(fecha) = :fecha
                   AND hora = :hora
-                  AND estado IN ('solicitada','pendiente','confirmada','reagendada')";
+                  AND estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')";
         if ($excludeId) {
             $sql .= " AND id != :exclude_id";
             $params['exclude_id'] = $excludeId;
@@ -178,7 +339,7 @@ class DisponibilidadModel {
                 LEFT JOIN citas c
                   ON DATE(c.fecha) = h.fecha
                  AND c.hora = h.hora
-                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada')
+                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.fecha = :fecha
                   AND h.activo = 1
                   AND h.tipo = 'disponible'
@@ -205,7 +366,7 @@ class DisponibilidadModel {
                 LEFT JOIN citas c
                   ON DATE(c.fecha) = h.fecha
                  AND c.hora = h.hora
-                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada')
+                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.activo = 1
                   AND h.tipo = 'disponible'
                   AND h.fecha BETWEEN :desde AND :hasta
@@ -219,18 +380,30 @@ class DisponibilidadModel {
     public function listSlotsByRange(string $desde, string $hasta, bool $includeInactive = false): array {
         $sql = "SELECT h.fecha,
                        TIME_FORMAT(h.hora, '%H:%i') AS hora,
-                       h.activo,
+                       CASE WHEN COUNT(c.id) > 0 THEN 0 ELSE h.activo END AS activo,
                        h.tipo,
                        h.motivo,
+                       CASE
+                           WHEN COUNT(c.id) > 0 THEN 'reservado'
+                           WHEN h.activo = 1 AND h.tipo = 'disponible' THEN 'disponible'
+                           ELSE 'bloqueo'
+                       END AS estado,
+                       MIN(c.id) AS reserva_id,
                        MAX(CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS ocupada
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
                   ON DATE(c.fecha) = h.fecha
                  AND c.hora = h.hora
-                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada')
+                 AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.fecha BETWEEN :desde AND :hasta";
         if (!$includeInactive) {
-            $sql .= " AND h.activo = 1 AND h.tipo = 'disponible'";
+            $sql .= " AND h.activo = 1 AND h.tipo = 'disponible'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM citas cx
+                          WHERE DATE(cx.fecha) = h.fecha
+                            AND cx.hora = h.hora
+                            AND cx.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
+                      )";
         }
         $sql .= " GROUP BY h.id, h.fecha, h.hora, h.activo, h.tipo, h.motivo
                  ORDER BY h.fecha ASC, h.hora ASC";
@@ -252,3 +425,4 @@ class DisponibilidadModel {
         return !$this->hasActiveBooking($fecha, $hora, $excludeId);
     }
 }
+

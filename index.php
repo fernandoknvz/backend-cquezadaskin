@@ -8,15 +8,17 @@
 
 header("Content-Type: application/json; charset=UTF-8");
 
+$appEnv = strtolower((string)(getenv('APP_ENV') ?: ($_ENV['APP_ENV'] ?? $_SERVER['APP_ENV'] ?? 'local')));
+$isProduction = $appEnv === 'production';
+
 // === MODO DEBUG (puedes desactivarlo en producción) ===
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', $isProduction ? '0' : '1');
 ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/error_log.txt');
 
 // === CONFIGURACIONES GLOBALES ===
 require_once __DIR__ . '/config/cors.php';
-require_once __DIR__ . '/config/database.php';
 
 // === CAPTURAR RUTA Y MÉTODO ===
 $requestUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
@@ -52,6 +54,16 @@ if (str_starts_with($route, 'index.php/')) {
     $route = substr($route, strlen('index.php/'));
 }
 
+if ($route === 'health') {
+    echo json_encode([
+        "status" => "ok",
+        "service" => "cquezadaskin-backend",
+        "environment" => $appEnv
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+require_once __DIR__ . '/config/database.php';
 
 // === CUERPO JSON GLOBAL ===
 $rawInput = file_get_contents("php://input");

@@ -1,0 +1,11 @@
+.env
+.git
+.github
+vendor
+*.sql
+*.log
+error_log.txt
+_pdo_test.php
+_whereami.php
+debug_env_mail.php
+migrations/dev_seed_admin.sql
