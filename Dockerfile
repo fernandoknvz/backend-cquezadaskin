@@ -14,8 +14,10 @@ RUN composer install --no-dev --prefer-dist --no-interaction --no-progress --opt
 
 COPY . .
 
-RUN a2enmod rewrite
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+  && a2enmod rewrite
 
 EXPOSE 80
 
-CMD ["sh", "-c", "sed -ri \"s!^Listen 80$!Listen ${PORT:-80}!\" /etc/apache2/ports.conf && sed -ri \"s!<VirtualHost \\*:80>!<VirtualHost *:${PORT:-80}>!\" /etc/apache2/sites-available/000-default.conf && exec apache2-foreground"]
+CMD ["/usr/local/bin/entrypoint.sh"]
