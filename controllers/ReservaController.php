@@ -75,7 +75,7 @@ class ReservaController {
         }
 
         foreach ($slots as $slotHora) {
-            if ($this->citaModel->hasActiveConflict($fecha, $slotHora)) {
+            if ($this->citaModel->hasActiveConflict($fecha, $slotHora, null, 30)) {
                 return Response::json([
                     'ok' => false,
                     'success' => false,
@@ -90,12 +90,11 @@ class ReservaController {
             }
         }
 
-        $citaIds = [];
-        foreach ($slots as $slotHora) {
-            $citaIds[] = (int)$this->citaModel->create($clienteId, $servicioId, $fecha, $slotHora, 'solicitada');
-        }
+        $citaId = (int)$this->citaModel->create($clienteId, $servicioId, $fecha, $slots[0] ?? $hora, 'solicitada', $duracionMin);
+        $citaIds = [$citaId];
 
         $horaFin = $this->calculateEndTime($fecha, $slots);
+        error_log("Reserva creada | id={$citaId} | cliente_id={$clienteId} | servicio_id={$servicioId} | fecha={$fecha} | hora=" . substr($slots[0] ?? $hora, 0, 5) . " | duracion_min={$duracionMin}");
         $this->notifyBookingReceived($cliente, $servicio, $fecha, $slots[0] ?? $hora, $horaFin, $duracionMin, $servicioId, $citaIds);
 
         Response::json([
@@ -109,6 +108,7 @@ class ReservaController {
                 'hora' => substr($slots[0], 0, 5),
                 'duracion_min' => $duracionMin,
                 'slots' => array_map(fn($h) => substr($h, 0, 5), $slots),
+                'cita_id' => $citaId,
                 'cita_ids' => $citaIds,
             ],
         ], 201);

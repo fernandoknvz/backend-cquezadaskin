@@ -95,7 +95,7 @@ class CitaController {
 
                     // Validar disponibilidad de todos los slots
                     foreach ($slots as $slotHora) {
-                        if ($this->citaModel->hasActiveConflict($fechaKey, $slotHora)) {
+                        if ($this->citaModel->hasActiveConflict($fechaKey, $slotHora, null, 30)) {
                             return Response::json([
                                 'ok' => false,
                                 'success' => false,
@@ -122,11 +122,9 @@ class CitaController {
                         ]);
                     }
 
-                    // Crear la(s) cita(s): 1 fila por slot de 30 min
-                    $citaIds = [];
-                    foreach ($slots as $slotHora) {
-                        $citaIds[] = (int)$this->citaModel->create($clienteId, $servicioId, $fechaKey, $slotHora);
-                    }
+                    $citaId = (int)$this->citaModel->create($clienteId, $servicioId, $fechaKey, $slots[0] ?? $hora, null, $duracionMin);
+                    $citaIds = [$citaId];
+                    error_log("Reserva admin creada | id={$citaId} | cliente_id={$clienteId} | servicio_id={$servicioId} | fecha={$fechaKey} | hora=" . substr($slots[0] ?? $hora, 0, 5) . " | duracion_min={$duracionMin}");
 
                     $servicioNombre = '';
                     try {
@@ -139,7 +137,7 @@ class CitaController {
                     }
 
                     // Notificación admin (solo 1 correo por reserva)
-                    $notifyTo = getenv('MAIL_NOTIFY_TO') ?: getenv('MAIL_FROM_ADDRESS');
+                    $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS');
                     if ($notifyTo) {
                         try {
                             $subjectAdmin = "Nueva solicitud de reserva - " . mailBrandName();
@@ -154,7 +152,10 @@ class CitaController {
                                 'servicio_id' => $servicioId,
                                 'servicio' => $servicioNombre,
                             ]);
-                            sendMail($notifyTo, $subjectAdmin, $bodyMailAdmin);
+                            $sent = sendMail($notifyTo, $subjectAdmin, $bodyMailAdmin);
+                            if (!$sent) {
+                                error_log("Mailer Error: no se pudo enviar notificacion admin de nueva cita. cita_id={$citaId}");
+                            }
                         } catch (Exception $mailEx) {
                             error_log("Error enviando correo admin de nueva cita: " . $mailEx->getMessage());
                         }
@@ -172,7 +173,10 @@ class CitaController {
                                 'duracion_min' => $duracionMin,
                                 'servicio' => $servicioNombre,
                             ]);
-                            sendMail($correo, $subjectCliente, $bodyMailCliente);
+                            $sent = sendMail($correo, $subjectCliente, $bodyMailCliente);
+                            if (!$sent) {
+                                error_log("Mailer Error: no se pudo enviar correo al cliente por solicitud recibida. cita_id={$citaId}");
+                            }
                         } catch (Exception $mailEx) {
                             error_log("Error enviando correo al cliente por solicitud recibida: " . $mailEx->getMessage());
                         }
@@ -182,6 +186,7 @@ class CitaController {
                         "message" => "Cita agendada correctamente",
                         "duracion_min" => $duracionMin,
                         "slots" => array_map(fn($h) => substr($h, 0, 5), $slots),
+                        "cita_id" => $citaId,
                         "cita_ids" => $citaIds
                     ]);
                     break;
@@ -207,8 +212,15 @@ class CitaController {
                         $fechaKey = date('Y-m-d', strtotime((string)$nuevaFecha));
                         $horaKey = date('H:i:s', strtotime((string)$nuevaHora));
 
-                        if (!$this->disponibilidadModel->isSlotAvailable($fechaKey, $horaKey, $id)) {
+                        $duracionCheck = (int)($before['duracion_min'] ?? 30);
+                        if ($this->citaModel->hasActiveConflict($fechaKey, $horaKey, $id, $duracionCheck)) {
                             return Response::error("Horario no disponible", 409);
+                        }
+
+                        foreach ($this->buildSlots($fechaKey, $horaKey, $duracionCheck) as $slotHora) {
+                            if (!$this->disponibilidadModel->isSlotAvailable($fechaKey, $slotHora, $id)) {
+                                return Response::error("Horario no disponible", 409);
+                            }
                         }
                     }
 
@@ -298,14 +310,14 @@ class CitaController {
                                     $endTs = strtotime($lastFecha . ' ' . $lastHora);
                                     $endTs = $endTs !== false ? $endTs + (30 * 60) : false;
                                     
-                                    $duracionTotal = count($group) * 30;
+                                    $duracionTotal = max(count($group) * 30, (int)($before['duracion_min'] ?? 30));
                                     
                                     $subject = "Tu cita ha sido confirmada - " . mailBrandName();
                                     $bodyHtml = buildClientBookingConfirmedMail([
                                         'nombre' => $before['cliente'] ?? '',
                                         'fecha' => $firstSlot['fecha'] ?? $fechaMail,
                                         'hora' => $firstSlot['hora'] ?? $horaMail,
-                                        'hora_fin' => $endTs !== false ? date('H:i:s', $endTs) : '',
+                                        'hora_fin' => $before['hora_fin'] ?? ($endTs !== false ? date('H:i:s', $endTs) : ''),
                                         'duracion_min' => $duracionTotal,
                                         'servicio' => $before['servicio'] ?? '',
                                     ]);
@@ -354,14 +366,14 @@ class CitaController {
                                     $endTs = strtotime($lastFecha . ' ' . $lastHora);
                                     $endTs = $endTs !== false ? $endTs + (30 * 60) : false;
                                     
-                                    $duracionTotal = count($group) * 30;
+                                    $duracionTotal = max(count($group) * 30, (int)($before['duracion_min'] ?? 30));
                                     
                                     $subject = "Tu cita ha sido cancelada - " . mailBrandName();
                                     $bodyHtml = buildClientBookingCancelledMail([
                                         'nombre' => $before['cliente'] ?? '',
                                         'fecha' => $firstSlot['fecha'] ?? $fechaMail,
                                         'hora' => $firstSlot['hora'] ?? $horaMail,
-                                        'hora_fin' => $endTs !== false ? date('H:i:s', $endTs) : '',
+                                        'hora_fin' => $before['hora_fin'] ?? ($endTs !== false ? date('H:i:s', $endTs) : ''),
                                         'duracion_min' => $duracionTotal,
                                         'servicio' => $before['servicio'] ?? '',
                                         'motivo' => $motivoCancelacion,
@@ -419,5 +431,20 @@ class CitaController {
         );
 
         return $dateTime instanceof DateTimeImmutable ? $dateTime : null;
+    }
+
+    private function buildSlots(string $fecha, string $hora, int $duracionMin): array {
+        $duracionMin = in_array($duracionMin, [30, 60, 90], true) ? $duracionMin : 30;
+        $startAt = $this->makeChileDateTime($fecha, $hora);
+        if (!$startAt) {
+            return [];
+        }
+
+        $slots = [];
+        for ($i = 0; $i < (int)($duracionMin / 30); $i++) {
+            $slots[] = $startAt->modify('+' . ($i * 30) . ' minutes')->format('H:i:s');
+        }
+
+        return $slots;
     }
 }

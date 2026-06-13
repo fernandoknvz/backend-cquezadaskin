@@ -39,6 +39,55 @@ function mailSafe($value)
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 
+function mailRedact($value)
+{
+    $value = (string)$value;
+    if ($value === '') {
+        return '';
+    }
+
+    if (filter_var($value, FILTER_VALIDATE_EMAIL)) {
+        [$user, $domain] = explode('@', $value, 2);
+        return substr($user, 0, 2) . '***@' . $domain;
+    }
+
+    return substr($value, 0, 3) . '***';
+}
+
+function mailLog($message, array $context = [])
+{
+    $safe = [];
+    foreach ($context as $key => $value) {
+        if (preg_match('/pass|password|secret|token|key/i', (string)$key)) {
+            $safe[$key] = '[redacted]';
+        } elseif (preg_match('/mail|correo|email|to|from|user|username/i', (string)$key)) {
+            $safe[$key] = mailRedact((string)$value);
+        } else {
+            $safe[$key] = is_scalar($value) ? (string)$value : '[complex]';
+        }
+    }
+
+    $pairs = [];
+    foreach ($safe as $key => $value) {
+        $pairs[] = $key . '=' . $value;
+    }
+
+    error_log('Mailer | ' . $message . ($pairs ? ' | ' . implode(' | ', $pairs) : ''));
+}
+
+function mailSanitizeError($message)
+{
+    $message = (string)$message;
+    foreach (['MAIL_PASSWORD', 'MAIL_PASS', 'MAIL_USERNAME', 'MAIL_USER', 'MAIL_FROM_ADDRESS', 'MAIL_FROM'] as $key) {
+        $value = mailEnv($key);
+        if ($value) {
+            $message = str_replace((string)$value, '[redacted]', $message);
+        }
+    }
+
+    return $message;
+}
+
 function mailBrandName()
 {
     return mailEnv('BRAND_NAME')
@@ -302,6 +351,29 @@ function buildClientBookingCancelledMail(array $data)
 function sendMail($to, $subject, $bodyHtml)
 {
     if (!class_exists(PHPMailer::class)) {
+        mailLog('PHPMailer no disponible');
+        return false;
+    }
+
+    $host = mailEnv('MAIL_HOST');
+    $username = mailEnv('MAIL_USERNAME') ?: mailEnv('MAIL_USER');
+    $password = mailEnv('MAIL_PASSWORD') ?: mailEnv('MAIL_PASS');
+    $fromAddress = mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM') ?: $username;
+
+    $missing = [];
+    foreach (['MAIL_HOST' => $host, 'MAIL_USERNAME/MAIL_USER' => $username, 'MAIL_PASSWORD/MAIL_PASS' => $password, 'MAIL_FROM_ADDRESS/MAIL_FROM' => $fromAddress] as $key => $value) {
+        if ($value === null || $value === false || $value === '') {
+            $missing[] = $key;
+        }
+    }
+
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        mailLog('destinatario invalido', ['to' => $to]);
+        return false;
+    }
+
+    if (!empty($missing)) {
+        mailLog('configuracion SMTP incompleta', ['missing' => implode(',', $missing), 'to' => $to]);
         return false;
     }
 
@@ -309,10 +381,12 @@ function sendMail($to, $subject, $bodyHtml)
 
     try {
         $mail->isSMTP();
-        $mail->Host = mailEnv('MAIL_HOST');
+        $mail->Host = $host;
         $mail->SMTPAuth = true;
-        $mail->Username = mailEnv('MAIL_USERNAME') ?: mailEnv('MAIL_USER');
-        $mail->Password = mailEnv('MAIL_PASSWORD') ?: mailEnv('MAIL_PASS');
+        $mail->Username = $username;
+        $mail->Password = $password;
+        $mail->Timeout = (int)(mailEnv('MAIL_TIMEOUT') ?: 8);
+        $mail->SMTPKeepAlive = false;
         $mail->SMTPOptions = [
             'ssl' => [
                 'verify_peer' => false,
@@ -332,7 +406,6 @@ function sendMail($to, $subject, $bodyHtml)
         $mail->Port = $port ? (int)$port : 465;
         $mail->CharSet = 'UTF-8';
 
-        $fromAddress = mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM') ?: $mail->Username;
         $fromName = mailEnv('MAIL_FROM_NAME') ?: $fromAddress;
         $replyToAddress = mailEnv('MAIL_REPLY_TO_ADDRESS') ?: mailEnv('MAIL_REPLY_TO') ?: null;
         $replyToName = mailEnv('MAIL_REPLY_TO_NAME') ?: $fromName;
@@ -362,9 +435,16 @@ function sendMail($to, $subject, $bodyHtml)
         );
 
         $mail->send();
+        mailLog('correo enviado', ['to' => $to, 'from' => $fromAddress, 'host' => $host, 'port' => $mail->Port]);
         return true;
     } catch (Exception $e) {
-        error_log("Mailer Error: {$mail->ErrorInfo}");
+        mailLog('error enviando correo', [
+            'to' => $to,
+            'from' => $fromAddress,
+            'host' => $host,
+            'port' => $mail->Port,
+            'error' => mailSanitizeError($mail->ErrorInfo ?: $e->getMessage()),
+        ]);
         return false;
     }
 }

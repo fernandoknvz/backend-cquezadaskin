@@ -143,8 +143,8 @@ class DisponibilidadModel {
                        MAX(CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS ocupada
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
-                  ON DATE(c.fecha) = h.fecha
-                 AND c.hora = h.hora
+                  ON TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(c.fecha), c.hora)
+                 AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora))
                  AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.fecha = :fecha
                 GROUP BY h.id, h.fecha, h.hora, h.activo, h.tipo, h.motivo
@@ -167,8 +167,8 @@ class DisponibilidadModel {
                   AND NOT EXISTS (
                       SELECT 1
                       FROM citas c
-                      WHERE DATE(c.fecha) = h.fecha
-                        AND c.hora = h.hora
+                      WHERE TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(c.fecha), c.hora)
+                        AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora))
                         AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                   )";
         $stmt = $this->pdo->prepare($sql);
@@ -204,15 +204,15 @@ class DisponibilidadModel {
                 $where[] = "h.tipo = 'disponible'";
                 $where[] = "NOT EXISTS (
                     SELECT 1 FROM citas cx
-                    WHERE DATE(cx.fecha) = h.fecha
-                      AND cx.hora = h.hora
+                    WHERE TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(cx.fecha), cx.hora)
+                      AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(cx.duracion_min, 30), TIMESTAMP(DATE(cx.fecha), cx.hora))
                       AND cx.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 )";
             } else {
                 $where[] = "(h.activo <> 1 OR h.tipo <> 'disponible' OR EXISTS (
                     SELECT 1 FROM citas cx
-                    WHERE DATE(cx.fecha) = h.fecha
-                      AND cx.hora = h.hora
+                    WHERE TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(cx.fecha), cx.hora)
+                      AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(cx.duracion_min, 30), TIMESTAMP(DATE(cx.fecha), cx.hora))
                       AND cx.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 ))";
             }
@@ -230,8 +230,8 @@ class DisponibilidadModel {
                        MAX(CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS ocupada
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
-                  ON DATE(c.fecha) = h.fecha
-                 AND c.hora = h.hora
+                  ON TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(c.fecha), c.hora)
+                 AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora))
                  AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE " . implode(' AND ', $where) . "
                 GROUP BY h.id, h.fecha, h.hora, h.activo, h.tipo, h.motivo, h.creado_en, h.updated_at
@@ -318,10 +318,16 @@ class DisponibilidadModel {
     }
 
     public function hasActiveBooking(string $fecha, string $hora, ?int $excludeId = null): bool {
-        $params = ['fecha' => $fecha, 'hora' => $hora];
+        $slotTs = strtotime($fecha . ' ' . $hora);
+        if ($slotTs === false) {
+            return true;
+        }
+
+        $slotAt = date('Y-m-d H:i:s', $slotTs);
+        $params = ['slot_at_start' => $slotAt, 'slot_at_end' => $slotAt];
         $sql = "SELECT COUNT(*) FROM citas
-                WHERE DATE(fecha) = :fecha
-                  AND hora = :hora
+                WHERE :slot_at_start >= CONCAT(DATE(fecha), ' ', TIME_FORMAT(hora, '%H:%i:%s'))
+                  AND :slot_at_end < TIMESTAMPADD(MINUTE, COALESCE(duracion_min, 30), TIMESTAMP(DATE(fecha), hora))
                   AND estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')";
         if ($excludeId) {
             $sql .= " AND id != :exclude_id";
@@ -337,8 +343,8 @@ class DisponibilidadModel {
         $sql = "SELECT TIME_FORMAT(h.hora, '%H:%i') AS hora
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
-                  ON DATE(c.fecha) = h.fecha
-                 AND c.hora = h.hora
+                  ON TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(c.fecha), c.hora)
+                 AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora))
                  AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.fecha = :fecha
                   AND h.activo = 1
@@ -364,8 +370,8 @@ class DisponibilidadModel {
         $sql = "SELECT DISTINCT h.fecha
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
-                  ON DATE(c.fecha) = h.fecha
-                 AND c.hora = h.hora
+                  ON TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(c.fecha), c.hora)
+                 AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora))
                  AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.activo = 1
                   AND h.tipo = 'disponible'
@@ -392,16 +398,16 @@ class DisponibilidadModel {
                        MAX(CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS ocupada
                 FROM horarios_disponibles h
                 LEFT JOIN citas c
-                  ON DATE(c.fecha) = h.fecha
-                 AND c.hora = h.hora
+                  ON TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(c.fecha), c.hora)
+                 AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora))
                  AND c.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                 WHERE h.fecha BETWEEN :desde AND :hasta";
         if (!$includeInactive) {
             $sql .= " AND h.activo = 1 AND h.tipo = 'disponible'
                       AND NOT EXISTS (
                           SELECT 1 FROM citas cx
-                          WHERE DATE(cx.fecha) = h.fecha
-                            AND cx.hora = h.hora
+                          WHERE TIMESTAMP(h.fecha, h.hora) >= TIMESTAMP(DATE(cx.fecha), cx.hora)
+                            AND TIMESTAMP(h.fecha, h.hora) < TIMESTAMPADD(MINUTE, COALESCE(cx.duracion_min, 30), TIMESTAMP(DATE(cx.fecha), cx.hora))
                             AND cx.estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')
                       )";
         }

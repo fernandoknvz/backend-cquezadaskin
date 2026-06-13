@@ -8,6 +8,7 @@
 --   migrations/2026_05_22_admin_calendario_disponibilidad.sql
 --   migrations/2026_05_22_admin_clientes_reservas.sql
 --   migrations/2026_05_22_faq_valoraciones.sql
+--   migrations/2026_06_13_reservas_duracion.sql
 --
 -- This file intentionally does not create the database and does not insert
 -- development admin users, customer data, appointments, refresh tokens, or
@@ -186,6 +187,7 @@ CREATE TABLE `citas` (
   `servicio_id` INT NOT NULL,
   `fecha` DATETIME NOT NULL,
   `hora` TIME DEFAULT NULL,
+  `duracion_min` INT NOT NULL DEFAULT 30,
   `estado` ENUM('solicitada','pendiente','confirmada','cancelada','completada','reagendada') DEFAULT 'pendiente',
   `observacion_admin` TEXT,
   `creado_en` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,

@@ -10,7 +10,10 @@ class CitaModel {
     public function getAll() {
         $sql = "SELECT c.id, c.cliente_id, c.servicio_id,
                        cli.nombre AS cliente, cli.correo, cli.telefono,
-                       s.nombre AS servicio, c.fecha, c.hora, c.estado
+                       s.nombre AS servicio, c.fecha, c.hora,
+                       COALESCE(c.duracion_min, 30) AS duracion_min,
+                       TIME_FORMAT(TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora)), '%H:%i') AS hora_fin,
+                       c.estado
                 FROM citas c
                 INNER JOIN clientes cli ON cli.id = c.cliente_id
                 INNER JOIN servicios s ON s.id = c.servicio_id
@@ -22,7 +25,10 @@ class CitaModel {
     public function getById($id) {
         $sql = "SELECT c.id, c.cliente_id, c.servicio_id,
                        cli.nombre AS cliente, cli.correo, cli.telefono,
-                       s.nombre AS servicio, c.fecha, c.hora, c.estado,
+                       s.nombre AS servicio, c.fecha, c.hora,
+                       COALESCE(c.duracion_min, 30) AS duracion_min,
+                       TIME_FORMAT(TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora)), '%H:%i') AS hora_fin,
+                       c.estado,
                        c.observacion_admin, c.creado_en, c.updated_at
                 FROM citas c
                 INNER JOIN clientes cli ON cli.id = c.cliente_id
@@ -87,6 +93,8 @@ class CitaModel {
                        s.nombre AS servicio,
                        DATE(c.fecha) AS fecha,
                        TIME_FORMAT(c.hora, '%H:%i') AS hora,
+                       COALESCE(c.duracion_min, 30) AS duracion_min,
+                       TIME_FORMAT(TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora)), '%H:%i') AS hora_fin,
                        c.estado, c.observacion_admin, c.creado_en, c.updated_at
                 FROM citas c
                 INNER JOIN clientes cli ON cli.id = c.cliente_id
@@ -150,6 +158,8 @@ class CitaModel {
                        s.nombre AS servicio_nombre,
                        DATE(c.fecha) AS fecha,
                        TIME_FORMAT(c.hora, '%H:%i') AS hora,
+                       COALESCE(c.duracion_min, 30) AS duracion_min,
+                       TIME_FORMAT(TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora)), '%H:%i') AS hora_fin,
                        c.estado,
                        c.observacion_admin,
                        c.creado_en,
@@ -165,12 +175,22 @@ class CitaModel {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function hasActiveConflict(string $fecha, string $hora, ?int $excludeId = null): bool {
-        $params = [':fecha' => $fecha, ':hora' => $hora];
+    public function hasActiveConflict(string $fecha, string $hora, ?int $excludeId = null, int $duracionMin = 30): bool {
+        $duracionMin = $this->normalizeDuration($duracionMin);
+        $startAt = $fecha . ' ' . $hora;
+        $startTs = strtotime($startAt);
+        if ($startTs === false) {
+            return true;
+        }
+
+        $params = [
+            ':start_at' => date('Y-m-d H:i:s', $startTs),
+            ':end_at' => date('Y-m-d H:i:s', $startTs + ($duracionMin * 60)),
+        ];
         $sql = "SELECT COUNT(*)
                 FROM citas
-                WHERE DATE(fecha) = :fecha
-                  AND hora = :hora
+                WHERE CONCAT(DATE(fecha), ' ', TIME_FORMAT(hora, '%H:%i:%s')) < :end_at
+                  AND TIMESTAMPADD(MINUTE, COALESCE(duracion_min, 30), TIMESTAMP(DATE(fecha), hora)) > :start_at
                   AND estado IN ('solicitada','pendiente','confirmada','reagendada','aprobada')";
         if ($excludeId !== null) {
             $sql .= " AND id != :exclude_id";
@@ -191,6 +211,8 @@ class CitaModel {
                        c.creado_en,
                        c.updated_at,
                        c.servicio_id,
+                       COALESCE(c.duracion_min, 30) AS duracion_min,
+                       TIME_FORMAT(TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora)), '%H:%i') AS hora_fin,
                        s.nombre AS servicio_nombre,
                        s.subtitulo AS servicio_subtitulo
                 FROM citas c
@@ -219,6 +241,8 @@ class CitaModel {
                        s.nombre AS servicio_nombre,
                        DATE(c.fecha) AS fecha,
                        TIME_FORMAT(c.hora, '%H:%i') AS hora,
+                       COALESCE(c.duracion_min, 30) AS duracion_min,
+                       TIME_FORMAT(TIMESTAMPADD(MINUTE, COALESCE(c.duracion_min, 30), TIMESTAMP(DATE(c.fecha), c.hora)), '%H:%i') AS hora_fin,
                        c.estado,
                        c.observacion_admin,
                        c.creado_en,
@@ -276,24 +300,25 @@ class CitaModel {
     }
 
     // âœ… Crear nueva cita
-    public function create($clienteId, $servicioId, $fecha, $hora = null, $estado = null) {
+    public function create($clienteId, $servicioId, $fecha, $hora = null, $estado = null, int $duracionMin = 30) {
+        $duracionMin = $this->normalizeDuration($duracionMin);
         if ($estado !== null) {
-            $sql = "INSERT INTO citas (cliente_id, servicio_id, fecha, hora, estado)
-                    VALUES (?, ?, ?, ?, ?)";
+            $sql = "INSERT INTO citas (cliente_id, servicio_id, fecha, hora, estado, duracion_min)
+                    VALUES (?, ?, ?, ?, ?, ?)";
             $stmt = $this->pdo->prepare($sql);
-            $stmt->execute([$clienteId, $servicioId, $fecha, $hora, $estado]);
+            $stmt->execute([$clienteId, $servicioId, $fecha, $hora, $estado, $duracionMin]);
             return $this->pdo->lastInsertId();
         }
 
-        $sql = "INSERT INTO citas (cliente_id, servicio_id, fecha, hora)
-                VALUES (?, ?, ?, ?)";
+        $sql = "INSERT INTO citas (cliente_id, servicio_id, fecha, hora, duracion_min)
+                VALUES (?, ?, ?, ?, ?)";
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([$clienteId, $servicioId, $fecha, $hora]);
+        $stmt->execute([$clienteId, $servicioId, $fecha, $hora, $duracionMin]);
         return $this->pdo->lastInsertId();
     }
 
     public function update($id, $data) {
-        $fields = ['fecha', 'hora', 'estado', 'servicio_id', 'observacion_admin'];
+        $fields = ['fecha', 'hora', 'estado', 'servicio_id', 'observacion_admin', 'duracion_min'];
         $setParts = [];
         $params = [':id' => (int)$id];
 
@@ -479,6 +504,10 @@ class CitaModel {
         $stmt = $this->pdo->prepare("DELETE FROM citas WHERE id = ?");
         $stmt->execute([(int)$id]);
         return $stmt->rowCount() > 0;
+    }
+
+    private function normalizeDuration(int $duration): int {
+        return in_array($duration, [30, 60, 90], true) ? $duration : 30;
     }
 }
 

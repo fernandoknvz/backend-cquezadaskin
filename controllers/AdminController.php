@@ -893,19 +893,23 @@ class AdminController {
             return;
         }
 
-        if (!$this->citaModel->getById($id)) {
+        $reserva = $this->citaModel->getById($id);
+        if (!$reserva) {
             Response::error("Reserva no encontrada", 404);
             return;
         }
 
-        if ($this->citaModel->hasActiveConflict($fecha, $hora, $id)) {
+        $duracionMin = (int)($reserva['duracion_min'] ?? 30);
+        if ($this->citaModel->hasActiveConflict($fecha, $hora, $id, $duracionMin)) {
             Response::error("Ya existe una reserva activa en ese horario", 409);
             return;
         }
 
-        if (!$this->disponibilidadModel->isSlotAvailable($fecha, $hora, $id)) {
-            Response::error("Horario no disponible", 409);
-            return;
+        foreach ($this->buildReservaSlots($fecha, $hora, $duracionMin) as $slotHora) {
+            if (!$this->disponibilidadModel->isSlotAvailable($fecha, $slotHora, $id)) {
+                Response::error("Horario no disponible", 409);
+                return;
+            }
         }
 
         $this->citaModel->reagendarAdmin($id, $fecha, $hora, $motivo);
@@ -1149,6 +1153,25 @@ class AdminController {
         while ($current < $end) {
             $slots[] = $current->format('H:i:s');
             $current->modify('+' . $intervaloMinutos . ' minutes');
+        }
+
+        return $slots;
+    }
+
+    private function buildReservaSlots(string $fecha, string $hora, int $duracionMin): array {
+        $duracionMin = in_array($duracionMin, [30, 60, 90], true) ? $duracionMin : 30;
+        $startAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $hora,
+            new DateTimeZone('America/Santiago')
+        );
+        if (!$startAt) {
+            return [];
+        }
+
+        $slots = [];
+        for ($i = 0; $i < (int)($duracionMin / 30); $i++) {
+            $slots[] = $startAt->modify('+' . ($i * 30) . ' minutes')->format('H:i:s');
         }
 
         return $slots;

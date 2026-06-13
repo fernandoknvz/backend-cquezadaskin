@@ -349,12 +349,15 @@ class ClienteAuthController {
             return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 1 hora de anticipación", 400);
         }
 
-        if ($this->citaModel->hasActiveConflict($fecha, $hora, $reservaId)) {
+        $duracionMin = (int)($reserva['duracion_min'] ?? 30);
+        if ($this->citaModel->hasActiveConflict($fecha, $hora, $reservaId, $duracionMin)) {
             return Response::error("Ya existe una reserva activa en ese horario", 409);
         }
 
-        if (!$this->disponibilidadModel->isSlotAvailable($fecha, $hora, $reservaId)) {
-            return Response::error("Horario no disponible", 409);
+        foreach ($this->buildSlots($fecha, $hora, $duracionMin) as $slotHora) {
+            if (!$this->disponibilidadModel->isSlotAvailable($fecha, $slotHora, $reservaId)) {
+                return Response::error("Horario no disponible", 409);
+            }
         }
 
         $this->citaModel->reagendarClienteReserva($reservaId, $clienteId, $fecha, $hora, $motivo);
@@ -516,6 +519,25 @@ class ClienteAuthController {
         }
 
         return $fecha === $now->format('Y-m-d') && $startAt < $now->modify('+1 hour');
+    }
+
+    private function buildSlots(string $fecha, string $hora, int $duracionMin): array {
+        $duracionMin = in_array($duracionMin, [30, 60, 90], true) ? $duracionMin : 30;
+        $startAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $hora,
+            new DateTimeZone('America/Santiago')
+        );
+        if (!$startAt) {
+            return [];
+        }
+
+        $slots = [];
+        for ($i = 0; $i < (int)($duracionMin / 30); $i++) {
+            $slots[] = $startAt->modify('+' . ($i * 30) . ' minutes')->format('H:i:s');
+        }
+
+        return $slots;
     }
 
 }
