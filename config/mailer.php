@@ -107,7 +107,7 @@ function mailLastResult(): array
 function mailSanitizeError($message)
 {
     $message = (string)$message;
-    foreach (['MAIL_PASSWORD', 'MAIL_PASS', 'MAIL_USERNAME', 'MAIL_USER', 'MAIL_FROM_ADDRESS', 'MAIL_FROM'] as $key) {
+    foreach (['MAIL_PASSWORD', 'MAIL_PASS', 'MAIL_USERNAME', 'MAIL_USER', 'MAIL_FROM_ADDRESS', 'MAIL_FROM', 'BREVO_API_KEY'] as $key) {
         $value = mailEnv($key);
         if ($value) {
             $message = str_replace((string)$value, '[redacted]', $message);
@@ -130,6 +130,131 @@ function mailBrandName()
         ?: mailEnv('APP_NAME')
         ?: mailEnv('MAIL_FROM_NAME')
         ?: 'CQuezadaSkin';
+}
+
+function sendMailViaBrevoApi($to, $subject, $bodyHtml): bool
+{
+    $apiKey = mailEnv('BREVO_API_KEY');
+    $fromAddress = mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
+    $fromName = mailEnv('MAIL_FROM_NAME') ?: mailBrandName();
+
+    $missing = [];
+    foreach ([
+        'BREVO_API_KEY' => $apiKey,
+        'MAIL_FROM_ADDRESS/MAIL_FROM' => $fromAddress,
+    ] as $key => $value) {
+        if ($value === null || $value === false || $value === '') {
+            $missing[] = $key;
+        }
+    }
+
+    if (!empty($missing)) {
+        return mailSafeFailure('Configuracion Brevo API incompleta', [
+            'missing' => implode(',', $missing),
+            'to' => $to,
+        ]);
+    }
+
+    if (!filter_var($fromAddress, FILTER_VALIDATE_EMAIL)) {
+        return mailSafeFailure('Remitente Brevo API invalido', ['from' => $fromAddress, 'to' => $to]);
+    }
+
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        return mailSafeFailure('Destinatario invalido', ['to' => $to]);
+    }
+
+    $payload = [
+        'sender' => [
+            'name' => $fromName,
+            'email' => $fromAddress,
+        ],
+        'to' => [
+            ['email' => $to],
+        ],
+        'subject' => (string)$subject,
+        'htmlContent' => (string)$bodyHtml,
+    ];
+
+    $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($jsonPayload === false) {
+        return mailSafeFailure('No se pudo construir payload Brevo API', [
+            'to' => $to,
+            'error' => json_last_error_msg(),
+        ]);
+    }
+
+    $statusCode = 0;
+    $responseBody = '';
+    $transportError = null;
+
+    if (function_exists('curl_init')) {
+        $ch = curl_init('https://api.brevo.com/v3/smtp/email');
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => false,
+            CURLOPT_TIMEOUT => (int)(mailEnv('MAIL_TIMEOUT') ?: 8),
+            CURLOPT_HTTPHEADER => [
+                'api-key: ' . $apiKey,
+                'Content-Type: application/json',
+                'accept: application/json',
+            ],
+            CURLOPT_POSTFIELDS => $jsonPayload,
+        ]);
+        $responseBody = (string)curl_exec($ch);
+        if (curl_errno($ch)) {
+            $transportError = curl_error($ch);
+        }
+        $statusCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+    } else {
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'timeout' => (int)(mailEnv('MAIL_TIMEOUT') ?: 8),
+                'ignore_errors' => true,
+                'header' => implode("\r\n", [
+                    'api-key: ' . $apiKey,
+                    'Content-Type: application/json',
+                    'accept: application/json',
+                ]),
+                'content' => $jsonPayload,
+            ],
+        ]);
+        $result = @file_get_contents('https://api.brevo.com/v3/smtp/email', false, $context);
+        $responseBody = $result === false ? '' : (string)$result;
+        $headers = $http_response_header ?? [];
+        foreach ($headers as $header) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $header, $matches)) {
+                $statusCode = (int)$matches[1];
+                break;
+            }
+        }
+        if ($result === false) {
+            $error = error_get_last();
+            $transportError = $error['message'] ?? 'file_get_contents failed';
+        }
+    }
+
+    $safeBody = mailSanitizeError($responseBody);
+    if (in_array($statusCode, [200, 201, 202], true)) {
+        mailLog('correo enviado via Brevo API', ['to' => $to, 'from' => $fromAddress, 'status' => $statusCode]);
+        mailSetLastResult(true, 'Correo enviado via Brevo API', [
+            'to' => $to,
+            'from' => $fromAddress,
+            'status' => $statusCode,
+            'body' => $safeBody,
+        ]);
+        return true;
+    }
+
+    return mailSafeFailure('Error Brevo API enviando correo', [
+        'to' => $to,
+        'from' => $fromAddress,
+        'status' => $statusCode,
+        'error' => mailSanitizeError($transportError ?: $safeBody),
+        'body' => $safeBody,
+    ]);
 }
 
 function formatMailDate($date)
@@ -389,6 +514,11 @@ function sendMail($to, $subject, $bodyHtml)
     try {
         mailSetLastResult(false, 'Mail attempt started');
         error_log('MAIL STEP 6 sendMail entered');
+
+        $mailDriver = strtolower((string)(mailEnv('MAIL_DRIVER') ?: mailEnv('MAIL_MAILER') ?: 'smtp'));
+        if ($mailDriver === 'brevo_api') {
+            return sendMailViaBrevoApi($to, $subject, $bodyHtml);
+        }
 
         if (!class_exists(PHPMailer::class)) {
             return mailSafeFailure('PHPMailer no disponible');
