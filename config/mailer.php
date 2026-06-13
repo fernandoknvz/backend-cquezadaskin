@@ -350,6 +350,7 @@ function buildClientBookingCancelledMail(array $data)
 
 function sendMail($to, $subject, $bodyHtml)
 {
+    error_log('MAIL STEP 6 sendMail entered');
     if (!class_exists(PHPMailer::class)) {
         mailLog('PHPMailer no disponible');
         return false;
