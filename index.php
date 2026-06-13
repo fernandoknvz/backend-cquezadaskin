@@ -228,6 +228,10 @@ switch ($resource) {
         require_once __DIR__ . '/routes/dashboard.php';
         break;
 
+    case 'debug':
+        require __DIR__ . '/routes/debug.php';
+        break;
+
     default:
         http_response_code(404);
         echo json_encode([

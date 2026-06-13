@@ -75,6 +75,35 @@ function mailLog($message, array $context = [])
     error_log('Mailer | ' . $message . ($pairs ? ' | ' . implode(' | ', $pairs) : ''));
 }
 
+function mailSetLastResult(bool $success, string $message, array $context = [])
+{
+    $safe = [];
+    foreach ($context as $key => $value) {
+        if (preg_match('/pass|password|secret|token|key/i', (string)$key)) {
+            $safe[$key] = '[redacted]';
+        } elseif (preg_match('/mail|correo|email|to|from|user|username/i', (string)$key)) {
+            $safe[$key] = mailRedact((string)$value);
+        } else {
+            $safe[$key] = is_scalar($value) ? (string)$value : '[complex]';
+        }
+    }
+
+    $GLOBALS['mail_last_result'] = [
+        'success' => $success,
+        'message' => $message,
+        'context' => $safe,
+    ];
+}
+
+function mailLastResult(): array
+{
+    return $GLOBALS['mail_last_result'] ?? [
+        'success' => null,
+        'message' => 'No mail attempt recorded',
+        'context' => [],
+    ];
+}
+
 function mailSanitizeError($message)
 {
     $message = (string)$message;
@@ -350,9 +379,11 @@ function buildClientBookingCancelledMail(array $data)
 
 function sendMail($to, $subject, $bodyHtml)
 {
+    mailSetLastResult(false, 'Mail attempt started');
     error_log('MAIL STEP 6 sendMail entered');
     if (!class_exists(PHPMailer::class)) {
         mailLog('PHPMailer no disponible');
+        mailSetLastResult(false, 'PHPMailer no disponible');
         return false;
     }
 
@@ -370,11 +401,16 @@ function sendMail($to, $subject, $bodyHtml)
 
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
         mailLog('destinatario invalido', ['to' => $to]);
+        mailSetLastResult(false, 'Destinatario invalido', ['to' => $to]);
         return false;
     }
 
     if (!empty($missing)) {
         mailLog('configuracion SMTP incompleta', ['missing' => implode(',', $missing), 'to' => $to]);
+        mailSetLastResult(false, 'Configuracion SMTP incompleta', [
+            'missing' => implode(',', $missing),
+            'to' => $to,
+        ]);
         return false;
     }
 
@@ -437,14 +473,28 @@ function sendMail($to, $subject, $bodyHtml)
 
         $mail->send();
         mailLog('correo enviado', ['to' => $to, 'from' => $fromAddress, 'host' => $host, 'port' => $mail->Port]);
+        mailSetLastResult(true, 'Correo enviado', [
+            'to' => $to,
+            'from' => $fromAddress,
+            'host' => $host,
+            'port' => $mail->Port,
+        ]);
         return true;
     } catch (Exception $e) {
+        $safeError = mailSanitizeError($mail->ErrorInfo ?: $e->getMessage());
         mailLog('error enviando correo', [
             'to' => $to,
             'from' => $fromAddress,
             'host' => $host,
             'port' => $mail->Port,
-            'error' => mailSanitizeError($mail->ErrorInfo ?: $e->getMessage()),
+            'error' => $safeError,
+        ]);
+        mailSetLastResult(false, 'Error enviando correo', [
+            'to' => $to,
+            'from' => $fromAddress,
+            'host' => $host,
+            'port' => $mail->Port,
+            'error' => $safeError,
         ]);
         return false;
     }
