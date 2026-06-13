@@ -117,6 +117,13 @@ function mailSanitizeError($message)
     return $message;
 }
 
+function mailSafeFailure(string $message, array $context = []): bool
+{
+    mailLog($message, $context);
+    mailSetLastResult(false, $message, $context);
+    return false;
+}
+
 function mailBrandName()
 {
     return mailEnv('BRAND_NAME')
@@ -379,49 +386,70 @@ function buildClientBookingCancelledMail(array $data)
 
 function sendMail($to, $subject, $bodyHtml)
 {
-    mailSetLastResult(false, 'Mail attempt started');
-    error_log('MAIL STEP 6 sendMail entered');
-    if (!class_exists(PHPMailer::class)) {
-        mailLog('PHPMailer no disponible');
-        mailSetLastResult(false, 'PHPMailer no disponible');
-        return false;
-    }
-
-    $host = mailEnv('MAIL_HOST');
-    $username = mailEnv('MAIL_USERNAME') ?: mailEnv('MAIL_USER');
-    $password = mailEnv('MAIL_PASSWORD') ?: mailEnv('MAIL_PASS');
-    $fromAddress = mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM') ?: $username;
-
-    $missing = [];
-    foreach (['MAIL_HOST' => $host, 'MAIL_USERNAME/MAIL_USER' => $username, 'MAIL_PASSWORD/MAIL_PASS' => $password, 'MAIL_FROM_ADDRESS/MAIL_FROM' => $fromAddress] as $key => $value) {
-        if ($value === null || $value === false || $value === '') {
-            $missing[] = $key;
-        }
-    }
-
-    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
-        mailLog('destinatario invalido', ['to' => $to]);
-        mailSetLastResult(false, 'Destinatario invalido', ['to' => $to]);
-        return false;
-    }
-
-    if (!empty($missing)) {
-        mailLog('configuracion SMTP incompleta', ['missing' => implode(',', $missing), 'to' => $to]);
-        mailSetLastResult(false, 'Configuracion SMTP incompleta', [
-            'missing' => implode(',', $missing),
-            'to' => $to,
-        ]);
-        return false;
-    }
-
-    $mail = new PHPMailer(true);
-
     try {
+        mailSetLastResult(false, 'Mail attempt started');
+        error_log('MAIL STEP 6 sendMail entered');
+
+        if (!class_exists(PHPMailer::class)) {
+            return mailSafeFailure('PHPMailer no disponible');
+        }
+
+        $host = mailEnv('MAIL_HOST');
+        $username = mailEnv('MAIL_USERNAME') ?: mailEnv('MAIL_USER');
+        $password = mailEnv('MAIL_PASSWORD') ?: mailEnv('MAIL_PASS');
+        $fromAddress = mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
+        $port = mailEnv('MAIL_PORT');
+        $secure = strtolower(trim((string)(mailEnv('MAIL_ENCRYPTION') ?: mailEnv('MAIL_SECURE'))));
+
+        $missing = [];
+        foreach ([
+            'MAIL_HOST' => $host,
+            'MAIL_USERNAME/MAIL_USER' => $username,
+            'MAIL_PASSWORD/MAIL_PASS' => $password,
+            'MAIL_PORT' => $port,
+            'MAIL_ENCRYPTION/MAIL_SECURE' => $secure,
+            'MAIL_FROM_ADDRESS/MAIL_FROM' => $fromAddress,
+        ] as $key => $value) {
+            if ($value === null || $value === false || $value === '') {
+                $missing[] = $key;
+            }
+        }
+
+        if (!empty($missing)) {
+            return mailSafeFailure('Configuracion SMTP incompleta', [
+                'missing' => implode(',', $missing),
+                'to' => $to,
+            ]);
+        }
+
+        if (!filter_var($fromAddress, FILTER_VALIDATE_EMAIL)) {
+            return mailSafeFailure('Remitente SMTP invalido', ['from' => $fromAddress, 'to' => $to]);
+        }
+
+        if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+            return mailSafeFailure('Destinatario invalido', ['to' => $to]);
+        }
+
+        $portInt = filter_var($port, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
+        if ($portInt === false) {
+            return mailSafeFailure('Puerto SMTP invalido', ['port' => $port, 'to' => $to]);
+        }
+
+        if (!in_array($secure, ['ssl', 'smtps', 'tls'], true)) {
+            return mailSafeFailure('Encriptacion SMTP invalida', ['encryption' => $secure, 'to' => $to]);
+        }
+
+        if (!extension_loaded('openssl')) {
+            return mailSafeFailure('Extension openssl no disponible', ['to' => $to]);
+        }
+
+        $mail = new PHPMailer(true);
         $mail->isSMTP();
         $mail->Host = $host;
         $mail->SMTPAuth = true;
         $mail->Username = $username;
         $mail->Password = $password;
+        $mail->SMTPDebug = 0;
         $mail->Timeout = (int)(mailEnv('MAIL_TIMEOUT') ?: 8);
         $mail->SMTPKeepAlive = false;
         $mail->SMTPOptions = [
@@ -432,15 +460,13 @@ function sendMail($to, $subject, $bodyHtml)
             ],
         ];
 
-        $secure = strtolower((string)(mailEnv('MAIL_ENCRYPTION') ?: mailEnv('MAIL_SECURE')));
         if ($secure === 'ssl' || $secure === 'smtps') {
             $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        } elseif ($secure === 'tls') {
+        } else {
             $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         }
 
-        $port = mailEnv('MAIL_PORT');
-        $mail->Port = $port ? (int)$port : 465;
+        $mail->Port = $portInt;
         $mail->CharSet = 'UTF-8';
 
         $fromName = mailEnv('MAIL_FROM_NAME') ?: $fromAddress;
@@ -480,20 +506,21 @@ function sendMail($to, $subject, $bodyHtml)
             'port' => $mail->Port,
         ]);
         return true;
-    } catch (Exception $e) {
-        $safeError = mailSanitizeError($mail->ErrorInfo ?: $e->getMessage());
+    } catch (Throwable $e) {
+        $mailError = isset($mail) && $mail instanceof PHPMailer ? $mail->ErrorInfo : '';
+        $safeError = mailSanitizeError($mailError ?: $e->getMessage());
         mailLog('error enviando correo', [
-            'to' => $to,
-            'from' => $fromAddress,
-            'host' => $host,
-            'port' => $mail->Port,
+            'to' => $to ?? '',
+            'from' => $fromAddress ?? '',
+            'host' => $host ?? '',
+            'port' => isset($mail) && $mail instanceof PHPMailer ? $mail->Port : ($port ?? ''),
             'error' => $safeError,
         ]);
         mailSetLastResult(false, 'Error enviando correo', [
-            'to' => $to,
-            'from' => $fromAddress,
-            'host' => $host,
-            'port' => $mail->Port,
+            'to' => $to ?? '',
+            'from' => $fromAddress ?? '',
+            'host' => $host ?? '',
+            'port' => isset($mail) && $mail instanceof PHPMailer ? $mail->Port : ($port ?? ''),
             'error' => $safeError,
         ]);
         return false;

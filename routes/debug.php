@@ -37,30 +37,41 @@ if ($method === 'GET' && $action === 'mail-env') {
 }
 
 if ($method === 'POST' && $action === 'send-test-mail') {
-    $target = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
+    try {
+        $target = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
 
-    if (!$target) {
+        if (!$target) {
+            mailSetLastResult(false, 'No hay destinatario de diagnostico configurado');
+            Response::json([
+                'success' => false,
+                'message' => 'No hay destinatario de diagnostico configurado',
+                'error' => 'MAIL_NOTIFY_TO, MAIL_FROM_ADDRESS o MAIL_FROM no configurado',
+                'mail_result' => mailLastResult(),
+            ]);
+            return;
+        }
+
+        $sent = sendMail(
+            $target,
+            'Diagnostico SMTP - ' . mailBrandName(),
+            '<p>Correo de diagnostico temporal de CQuezadaSkin.</p><p>Si recibiste este mensaje, SMTP esta operativo.</p>'
+        );
+
+        Response::json([
+            'success' => $sent,
+            'message' => $sent ? 'Correo de diagnostico enviado' : 'No se pudo enviar correo de diagnostico',
+            'mail_result' => mailLastResult(),
+        ]);
+    } catch (Throwable $e) {
+        $safeError = mailSanitizeError($e->getMessage());
+        mailSetLastResult(false, 'Error inesperado en diagnostico de correo', ['error' => $safeError]);
         Response::json([
             'success' => false,
-            'message' => 'No hay destinatario de diagnostico configurado',
-            'error' => 'MAIL_NOTIFY_TO, MAIL_FROM_ADDRESS o MAIL_FROM no configurado',
+            'message' => 'Error inesperado en diagnostico de correo',
+            'error' => $safeError,
             'mail_result' => mailLastResult(),
-        ], 422);
-        return;
+        ]);
     }
-
-    $sent = sendMail(
-        $target,
-        'Diagnostico SMTP - ' . mailBrandName(),
-        '<p>Correo de diagnostico temporal de CQuezadaSkin.</p><p>Si recibiste este mensaje, SMTP esta operativo.</p>'
-    );
-
-    $mailResult = mailLastResult();
-    Response::json([
-        'success' => $sent,
-        'message' => $sent ? 'Correo de diagnostico enviado' : 'No se pudo enviar correo de diagnostico',
-        'mail_result' => $mailResult,
-    ], $sent ? 200 : 502);
     return;
 }
 
