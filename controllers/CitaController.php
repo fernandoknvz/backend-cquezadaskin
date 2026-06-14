@@ -137,7 +137,7 @@ class CitaController {
                     }
 
                     // Notificación admin (solo 1 correo por reserva)
-                    $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS');
+                    $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
                     if ($notifyTo) {
                         try {
                             $subjectAdmin = "Nueva solicitud de reserva - " . mailBrandName();

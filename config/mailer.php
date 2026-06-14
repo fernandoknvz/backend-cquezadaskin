@@ -1,7 +1,5 @@
 <?php
 use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-
 $autoloadPath = __DIR__ . '/../vendor/autoload.php';
 $phpmailerBase = __DIR__ . '/../libs/PHPMailer/src';
 $exceptionPath = $phpmailerBase . '/Exception.php';
@@ -75,35 +73,6 @@ function mailLog($message, array $context = [])
     error_log('Mailer | ' . $message . ($pairs ? ' | ' . implode(' | ', $pairs) : ''));
 }
 
-function mailSetLastResult(bool $success, string $message, array $context = [])
-{
-    $safe = [];
-    foreach ($context as $key => $value) {
-        if (preg_match('/pass|password|secret|token|key/i', (string)$key)) {
-            $safe[$key] = '[redacted]';
-        } elseif (preg_match('/mail|correo|email|to|from|user|username/i', (string)$key)) {
-            $safe[$key] = mailRedact((string)$value);
-        } else {
-            $safe[$key] = is_scalar($value) ? (string)$value : '[complex]';
-        }
-    }
-
-    $GLOBALS['mail_last_result'] = [
-        'success' => $success,
-        'message' => $message,
-        'context' => $safe,
-    ];
-}
-
-function mailLastResult(): array
-{
-    return $GLOBALS['mail_last_result'] ?? [
-        'success' => null,
-        'message' => 'No mail attempt recorded',
-        'context' => [],
-    ];
-}
-
 function mailSanitizeError($message)
 {
     $message = (string)$message;
@@ -120,7 +89,6 @@ function mailSanitizeError($message)
 function mailSafeFailure(string $message, array $context = []): bool
 {
     mailLog($message, $context);
-    mailSetLastResult(false, $message, $context);
     return false;
 }
 
@@ -239,12 +207,6 @@ function sendMailViaBrevoApi($to, $subject, $bodyHtml): bool
     $safeBody = mailSanitizeError($responseBody);
     if (in_array($statusCode, [200, 201, 202], true)) {
         mailLog('correo enviado via Brevo API', ['to' => $to, 'from' => $fromAddress, 'status' => $statusCode]);
-        mailSetLastResult(true, 'Correo enviado via Brevo API', [
-            'to' => $to,
-            'from' => $fromAddress,
-            'status' => $statusCode,
-            'body' => $safeBody,
-        ]);
         return true;
     }
 
@@ -512,9 +474,6 @@ function buildClientBookingCancelledMail(array $data)
 function sendMail($to, $subject, $bodyHtml)
 {
     try {
-        mailSetLastResult(false, 'Mail attempt started');
-        error_log('MAIL STEP 6 sendMail entered');
-
         $mailDriver = strtolower((string)(mailEnv('MAIL_DRIVER') ?: mailEnv('MAIL_MAILER') ?: 'smtp'));
         if ($mailDriver === 'brevo_api') {
             return sendMailViaBrevoApi($to, $subject, $bodyHtml);
@@ -629,24 +588,11 @@ function sendMail($to, $subject, $bodyHtml)
 
         $mail->send();
         mailLog('correo enviado', ['to' => $to, 'from' => $fromAddress, 'host' => $host, 'port' => $mail->Port]);
-        mailSetLastResult(true, 'Correo enviado', [
-            'to' => $to,
-            'from' => $fromAddress,
-            'host' => $host,
-            'port' => $mail->Port,
-        ]);
         return true;
     } catch (Throwable $e) {
         $mailError = isset($mail) && $mail instanceof PHPMailer ? $mail->ErrorInfo : '';
         $safeError = mailSanitizeError($mailError ?: $e->getMessage());
         mailLog('error enviando correo', [
-            'to' => $to ?? '',
-            'from' => $fromAddress ?? '',
-            'host' => $host ?? '',
-            'port' => isset($mail) && $mail instanceof PHPMailer ? $mail->Port : ($port ?? ''),
-            'error' => $safeError,
-        ]);
-        mailSetLastResult(false, 'Error enviando correo', [
             'to' => $to ?? '',
             'from' => $fromAddress ?? '',
             'host' => $host ?? '',

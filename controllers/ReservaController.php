@@ -95,7 +95,6 @@ class ReservaController {
 
         $horaFin = $this->calculateEndTime($fecha, $slots);
         error_log("Reserva creada | id={$citaId} | cliente_id={$clienteId} | servicio_id={$servicioId} | fecha={$fecha} | hora=" . substr($slots[0] ?? $hora, 0, 5) . " | duracion_min={$duracionMin}");
-        error_log('MAIL STEP 1 before notifyBookingReceived | cita_id=' . $citaId);
         $this->notifyBookingReceived($cliente, $servicio, $fecha, $slots[0] ?? $hora, $horaFin, $duracionMin, $servicioId, $citaIds);
 
         Response::json([
@@ -156,7 +155,6 @@ class ReservaController {
     }
 
     private function notifyBookingReceived(array $cliente, array $servicio, string $fecha, string $hora, string $horaFin, int $duracionMin, int $servicioId, array $citaIds): void {
-        error_log('MAIL STEP 2 inside notifyBookingReceived');
         $nombre = trim((string)($cliente['nombre'] ?? ''));
         $correo = trim((string)($cliente['correo'] ?? ''));
         $telefono = trim((string)($cliente['telefono'] ?? ''));
@@ -174,11 +172,9 @@ class ReservaController {
             'servicio' => $servicioNombre,
         ];
 
-        error_log('MAIL STEP 3 admin notifyTo present=' . (mailEnv('MAIL_NOTIFY_TO') ? 'yes' : 'no') . ' fromAddress present=' . (mailEnv('MAIL_FROM_ADDRESS') ? 'yes' : 'no') . ' from present=' . (mailEnv('MAIL_FROM') ? 'yes' : 'no'));
-        $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS');
+        $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
         if ($notifyTo) {
             try {
-                error_log('MAIL STEP 4 send admin');
                 $sent = sendMail(
                     $notifyTo,
                     'Nueva solicitud de reserva - ' . mailBrandName(),
@@ -197,7 +193,6 @@ class ReservaController {
 
         if ($correo) {
             try {
-                error_log('MAIL STEP 5 send client | clientEmailPresent=' . ($correo ? 'yes' : 'no'));
                 $sent = sendMail(
                     $correo,
                     'Hemos recibido tu solicitud de reserva - ' . mailBrandName(),
