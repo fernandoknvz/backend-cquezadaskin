@@ -6,6 +6,7 @@ require_once __DIR__ . '/../models/FaqModel.php';
 require_once __DIR__ . '/../models/TestimonioModel.php';
 require_once __DIR__ . '/../controllers/FaqController.php';
 require_once __DIR__ . '/../utils/Response.php';
+require_once __DIR__ . '/../config/mailer.php';
 
 class AdminController {
     private ClienteModel $clienteModel;
@@ -863,6 +864,9 @@ class AdminController {
 
     private function updateReservaEstado(int $id, array $body): void {
         $estado = trim((string)($body['estado'] ?? ''));
+        if ($estado === 'anulada') {
+            $estado = 'cancelada';
+        }
         $motivo = $this->optionalText($body['motivo'] ?? $body['observacion_admin'] ?? null);
 
         if (!in_array($estado, self::ESTADOS_RESERVA, true)) {
@@ -870,16 +874,29 @@ class AdminController {
             return;
         }
 
-        if (!$this->citaModel->getById($id)) {
+        $reservaAnterior = $this->citaModel->getById($id);
+        if (!$reservaAnterior) {
             Response::error("Reserva no encontrada", 404);
             return;
         }
 
+        $estadoAnterior = (string)($reservaAnterior['estado'] ?? '');
+        $estadoCambio = $estadoAnterior !== $estado;
         $this->citaModel->updateEstadoAdmin($id, $estado, $motivo);
+        $reservaActualizada = $this->citaModel->getById($id);
+
+        if ($estadoCambio && $reservaActualizada) {
+            if ($estado === 'confirmada') {
+                $this->notifyBookingStatus($reservaActualizada, 'confirmacion');
+            } elseif ($estado === 'cancelada') {
+                $this->notifyBookingStatus($reservaActualizada, 'cancelacion');
+            }
+        }
+
         Response::json([
             'success' => true,
-            'message' => 'Estado de reserva actualizado',
-            'data' => $this->citaModel->getById($id),
+            'message' => $estadoCambio ? 'Estado de reserva actualizado' : 'La reserva ya tenia ese estado',
+            'data' => $reservaActualizada,
         ]);
     }
 
@@ -899,7 +916,28 @@ class AdminController {
             return;
         }
 
-        $duracionMin = (int)($reserva['duracion_min'] ?? 30);
+        $duracionAnterior = (int)($reserva['duracion_min'] ?? 30);
+        $duracionMin = array_key_exists('duracion_min', $body)
+            ? (int)$body['duracion_min']
+            : $duracionAnterior;
+        if (!in_array($duracionMin, [30, 60, 90], true)) {
+            Response::error("Duracion invalida", 400);
+            return;
+        }
+
+        $fechaAnterior = $this->dateOnly($reserva['fecha'] ?? '');
+        $horaAnterior = $this->normalizeTime((string)($reserva['hora'] ?? '')) ?: (string)($reserva['hora'] ?? '');
+        $horarioCambio = $fechaAnterior !== $fecha || $horaAnterior !== $hora || $duracionAnterior !== $duracionMin;
+
+        if (!$horarioCambio) {
+            Response::json([
+                'success' => true,
+                'message' => 'La reserva ya tenia ese horario',
+                'data' => $reserva,
+            ]);
+            return;
+        }
+
         if ($this->citaModel->hasActiveConflict($fecha, $hora, $id, $duracionMin)) {
             Response::error("Ya existe una reserva activa en ese horario", 409);
             return;
@@ -912,12 +950,133 @@ class AdminController {
             }
         }
 
-        $this->citaModel->reagendarAdmin($id, $fecha, $hora, $motivo);
+        $this->citaModel->update($id, [
+            'fecha' => $fecha,
+            'hora' => $hora,
+            'estado' => 'reagendada',
+            'observacion_admin' => $motivo,
+            'duracion_min' => $duracionMin,
+        ]);
+        $reservaActualizada = $this->citaModel->getById($id);
+
+        if ($reservaActualizada) {
+            $this->notifyBookingRescheduled($reserva, $reservaActualizada);
+        }
+
         Response::json([
             'success' => true,
             'message' => 'Reserva reagendada',
-            'data' => $this->citaModel->getById($id),
+            'data' => $reservaActualizada,
         ]);
+    }
+
+    private function notifyBookingStatus(array $reserva, string $event): void {
+        $correo = trim((string)($reserva['correo'] ?? ''));
+        $id = (int)($reserva['id'] ?? 0);
+
+        if ($correo === '') {
+            error_log('Mail event ' . $event . ' fallida | reserva_id=' . $id . ' | reason=cliente_sin_correo');
+            return;
+        }
+
+        if ($event === 'confirmacion') {
+            $subject = 'Tu hora ha sido confirmada - ' . mailBrandName();
+            $body = buildClientBookingConfirmedMail($this->bookingMailData($reserva));
+        } elseif ($event === 'cancelacion') {
+            $subject = 'Tu hora ha sido anulada - ' . mailBrandName();
+            $body = buildClientBookingCancelledMail($this->bookingMailData($reserva));
+        } else {
+            return;
+        }
+
+        $sent = sendMail($correo, $subject, $body);
+        $this->logMailEvent($event, $id, $sent);
+    }
+
+    private function notifyBookingRescheduled(array $before, array $after): void {
+        $correo = trim((string)($after['correo'] ?? ''));
+        $id = (int)($after['id'] ?? 0);
+        $data = $this->bookingMailData($after);
+        $data['fecha_anterior'] = $before['fecha'] ?? '';
+        $data['hora_anterior'] = $before['hora'] ?? '';
+        $data['fecha_nueva'] = $after['fecha'] ?? '';
+        $data['hora_nueva'] = $after['hora'] ?? '';
+        $data['hora_fin_nueva'] = $this->bookingEndTime($after);
+
+        if ($correo !== '') {
+            $sent = sendMail(
+                $correo,
+                'Tu hora ha sido reagendada - ' . mailBrandName(),
+                buildClientBookingRescheduledMail($data)
+            );
+            $this->logMailEvent('reagendamiento', $id, $sent);
+        } else {
+            error_log('Mail event reagendamiento fallida | reserva_id=' . $id . ' | reason=cliente_sin_correo');
+        }
+
+        $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
+        if ($notifyTo) {
+            $sent = sendMail(
+                $notifyTo,
+                'Reserva reagendada - ' . mailBrandName(),
+                buildAdminBookingRescheduledMail($data)
+            );
+            $this->logMailEvent('reagendamiento_admin', $id, $sent);
+        }
+    }
+
+    private function bookingMailData(array $reserva): array {
+        return [
+            'nombre' => $reserva['cliente'] ?? $reserva['nombre'] ?? '',
+            'correo' => $reserva['correo'] ?? '',
+            'fecha' => $reserva['fecha'] ?? '',
+            'hora' => $reserva['hora'] ?? '',
+            'hora_fin' => $this->bookingEndTime($reserva),
+            'duracion_min' => (int)($reserva['duracion_min'] ?? 30),
+            'servicio' => $reserva['servicio'] ?? '',
+            'motivo' => $reserva['observacion_admin'] ?? '',
+        ];
+    }
+
+    private function bookingEndTime(array $reserva): string {
+        $fecha = $this->dateOnly($reserva['fecha'] ?? '');
+        $hora = (string)($reserva['hora'] ?? '');
+        $horaNormalizada = $this->normalizeTime($hora);
+        if ($fecha === '' || !$horaNormalizada) {
+            return '';
+        }
+
+        $duracionMin = (int)($reserva['duracion_min'] ?? 30);
+        $startAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $horaNormalizada,
+            new DateTimeZone('America/Santiago')
+        );
+
+        if (!$startAt) {
+            return '';
+        }
+
+        return $startAt->modify('+' . $duracionMin . ' minutes')->format('H:i:s');
+    }
+
+    private function dateOnly($value): string {
+        $date = $this->normalizeDate((string)$value);
+        if ($date) {
+            return $date;
+        }
+
+        $ts = strtotime((string)$value);
+        return $ts === false ? '' : date('Y-m-d', $ts);
+    }
+
+    private function logMailEvent(string $event, int $reservaId, bool $sent): void {
+        $result = json_encode(mailLastResult(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        error_log(
+            'Mail event ' . $event . ' ' . ($sent ? 'enviada' : 'fallida')
+            . ' | reserva_id=' . $reservaId
+            . ' | result=' . ($result ?: '{}')
+        );
     }
 
     private function normalizeReservaFilters(array $params): array {

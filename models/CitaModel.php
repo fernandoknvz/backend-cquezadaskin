@@ -323,7 +323,7 @@ class CitaModel {
         $params = [':id' => (int)$id];
 
         foreach ($fields as $field) {
-            if (isset($data[$field])) {
+            if (array_key_exists($field, $data)) {
                 $setParts[] = "$field = :$field";
                 $params[":$field"] = $data[$field];
             }

@@ -73,6 +73,35 @@ function mailLog($message, array $context = [])
     error_log('Mailer | ' . $message . ($pairs ? ' | ' . implode(' | ', $pairs) : ''));
 }
 
+function mailSetLastResult(bool $success, string $message, array $context = [])
+{
+    $safe = [];
+    foreach ($context as $key => $value) {
+        if (preg_match('/pass|password|secret|token|key/i', (string)$key)) {
+            $safe[$key] = '[redacted]';
+        } elseif (preg_match('/mail|correo|email|to|from|user|username/i', (string)$key)) {
+            $safe[$key] = mailRedact((string)$value);
+        } else {
+            $safe[$key] = is_scalar($value) ? (string)$value : '[complex]';
+        }
+    }
+
+    $GLOBALS['mail_last_result'] = [
+        'success' => $success,
+        'message' => $message,
+        'context' => $safe,
+    ];
+}
+
+function mailLastResult(): array
+{
+    return $GLOBALS['mail_last_result'] ?? [
+        'success' => null,
+        'message' => 'No mail attempt recorded',
+        'context' => [],
+    ];
+}
+
 function mailSanitizeError($message)
 {
     $message = (string)$message;
@@ -89,6 +118,7 @@ function mailSanitizeError($message)
 function mailSafeFailure(string $message, array $context = []): bool
 {
     mailLog($message, $context);
+    mailSetLastResult(false, $message, $context);
     return false;
 }
 
@@ -207,6 +237,11 @@ function sendMailViaBrevoApi($to, $subject, $bodyHtml): bool
     $safeBody = mailSanitizeError($responseBody);
     if (in_array($statusCode, [200, 201, 202], true)) {
         mailLog('correo enviado via Brevo API', ['to' => $to, 'from' => $fromAddress, 'status' => $statusCode]);
+        mailSetLastResult(true, 'Correo enviado via Brevo API', [
+            'to' => $to,
+            'from' => $fromAddress,
+            'status' => $statusCode,
+        ]);
         return true;
     }
 
@@ -420,7 +455,7 @@ function buildClientBookingConfirmedMail(array $data)
         'Tu cita ha sido confirmada',
         $intro,
         $rows,
-        'Si necesitas reagendar, puedes responder este correo.'
+        'Te recomendamos llegar con puntualidad. Si necesitas coordinar algo, puedes responder este correo.'
     );
 }
 
@@ -464,10 +499,85 @@ function buildClientBookingCancelledMail(array $data)
     }
 
     return buildMailLayout(
-        'Tu cita ha sido cancelada',
+        'Tu hora ha sido anulada',
         $intro,
         $rows,
         'Si deseas reagendar, puedes responder este correo o comunicarte por nuestros canales de contacto.'
+    );
+}
+
+function buildClientBookingRescheduledMail(array $data)
+{
+    $nombre = $data['nombre'] ?? '';
+    $servicio = $data['servicio'] ?? '';
+    $fechaAnterior = formatMailDate($data['fecha_anterior'] ?? '');
+    $horaAnterior = formatMailTime($data['hora_anterior'] ?? '');
+    $fechaNueva = formatMailDate($data['fecha_nueva'] ?? '');
+    $horaNueva = formatMailTime($data['hora_nueva'] ?? '');
+    $horaFinNueva = formatMailTime($data['hora_fin_nueva'] ?? '');
+    $duracion = $data['duracion_min'] ?? '';
+
+    $intro = '
+        <p style="margin-top:0;">Hola ' . mailSafe($nombre) . ',</p>
+        <p>Tu hora en <strong>' . mailSafe(mailBrandName()) . '</strong> ha sido <strong>reagendada</strong>.</p>
+        <p>Te compartimos el detalle actualizado:</p>
+    ';
+
+    $rows = '';
+    if ($servicio !== '') {
+        $rows .= buildMailDetailRow('Servicio', $servicio);
+    }
+    $rows .= buildMailDetailRow('Horario anterior', trim($fechaAnterior . ' ' . $horaAnterior));
+    $rows .= buildMailDetailRow(
+        'Nuevo horario',
+        $horaFinNueva !== '' ? trim($fechaNueva . ' ' . $horaNueva . ' a ' . $horaFinNueva) : trim($fechaNueva . ' ' . $horaNueva)
+    );
+    if ($duracion !== '') {
+        $rows .= buildMailDetailRow('Duracion', $duracion . ' minutos');
+    }
+    $rows .= buildMailDetailRow('Estado', 'Hora reagendada');
+
+    return buildMailLayout(
+        'Tu hora ha sido reagendada',
+        $intro,
+        $rows,
+        'Si este nuevo horario no acomoda, responde este correo para coordinar una alternativa.'
+    );
+}
+
+function buildAdminBookingRescheduledMail(array $data)
+{
+    $nombre = $data['nombre'] ?? '';
+    $correo = $data['correo'] ?? '';
+    $servicio = $data['servicio'] ?? '';
+    $fechaAnterior = formatMailDate($data['fecha_anterior'] ?? '');
+    $horaAnterior = formatMailTime($data['hora_anterior'] ?? '');
+    $fechaNueva = formatMailDate($data['fecha_nueva'] ?? '');
+    $horaNueva = formatMailTime($data['hora_nueva'] ?? '');
+    $duracion = $data['duracion_min'] ?? '';
+
+    $intro = '
+        <p style="margin-top:0;">Una reserva fue reagendada desde la administracion.</p>
+        <p>Detalle del cambio:</p>
+    ';
+
+    $rows = '';
+    $rows .= buildMailDetailRow('Cliente', $nombre);
+    $rows .= buildMailDetailRow('Correo', $correo);
+    if ($servicio !== '') {
+        $rows .= buildMailDetailRow('Servicio', $servicio);
+    }
+    $rows .= buildMailDetailRow('Horario anterior', trim($fechaAnterior . ' ' . $horaAnterior));
+    $rows .= buildMailDetailRow('Nuevo horario', trim($fechaNueva . ' ' . $horaNueva));
+    if ($duracion !== '') {
+        $rows .= buildMailDetailRow('Duracion', $duracion . ' minutos');
+    }
+
+    return buildMailLayout(
+        'Reserva reagendada',
+        $intro,
+        $rows,
+        'Este mensaje fue generado automaticamente por el sistema de agendamiento.'
     );
 }
 
@@ -588,11 +698,24 @@ function sendMail($to, $subject, $bodyHtml)
 
         $mail->send();
         mailLog('correo enviado', ['to' => $to, 'from' => $fromAddress, 'host' => $host, 'port' => $mail->Port]);
+        mailSetLastResult(true, 'Correo enviado', [
+            'to' => $to,
+            'from' => $fromAddress,
+            'host' => $host,
+            'port' => $mail->Port,
+        ]);
         return true;
     } catch (Throwable $e) {
         $mailError = isset($mail) && $mail instanceof PHPMailer ? $mail->ErrorInfo : '';
         $safeError = mailSanitizeError($mailError ?: $e->getMessage());
         mailLog('error enviando correo', [
+            'to' => $to ?? '',
+            'from' => $fromAddress ?? '',
+            'host' => $host ?? '',
+            'port' => isset($mail) && $mail instanceof PHPMailer ? $mail->Port : ($port ?? ''),
+            'error' => $safeError,
+        ]);
+        mailSetLastResult(false, 'Error enviando correo', [
             'to' => $to ?? '',
             'from' => $fromAddress ?? '',
             'host' => $host ?? '',
