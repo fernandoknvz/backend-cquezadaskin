@@ -6,6 +6,7 @@ require_once __DIR__ . '/../models/TestimonioModel.php';
 require_once __DIR__ . '/../utils/Response.php';
 require_once __DIR__ . '/../utils/JwtConfig.php';
 require_once __DIR__ . '/../utils/RutValidator.php';
+require_once __DIR__ . '/../config/mailer.php';
 require_once __DIR__ . '/../vendor/autoload.php';
 
 use Firebase\JWT\JWT;
@@ -360,7 +361,13 @@ class ClienteAuthController {
             }
         }
 
+        $reservaAnterior = $this->citaModel->getById($reservaId) ?: $reserva;
         $this->citaModel->reagendarClienteReserva($reservaId, $clienteId, $fecha, $hora, $motivo);
+        $reservaActualizada = $this->citaModel->getById($reservaId);
+
+        if ($reservaActualizada) {
+            $this->notifyClientRescheduledBooking($reservaAnterior, $reservaActualizada);
+        }
 
         Response::json([
             'success' => true,
@@ -538,6 +545,95 @@ class ClienteAuthController {
         }
 
         return $slots;
+    }
+
+    private function notifyClientRescheduledBooking(array $before, array $after): void {
+        $id = (int)($after['id'] ?? 0);
+        $correo = trim((string)($after['correo'] ?? ''));
+        $data = $this->bookingMailData($after);
+        $data['fecha_anterior'] = $before['fecha'] ?? '';
+        $data['hora_anterior'] = $before['hora'] ?? '';
+        $data['fecha_nueva'] = $after['fecha'] ?? '';
+        $data['hora_nueva'] = $after['hora'] ?? '';
+        $data['hora_fin_nueva'] = $this->bookingEndTime($after);
+        $data['origen'] = 'cliente';
+
+        if ($correo !== '') {
+            $sent = sendMail(
+                $correo,
+                'Tu hora ha sido reagendada - ' . mailBrandName(),
+                buildClientBookingRescheduledMail($data)
+            );
+            $this->logMailEvent('reagendamiento_cliente', $id, $sent);
+        } else {
+            error_log('Mail event reagendamiento_cliente fallida | reserva_id=' . $id . ' | reason=cliente_sin_correo');
+        }
+
+        $notifyTo = mailEnv('MAIL_NOTIFY_TO') ?: mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
+        if ($notifyTo) {
+            $sent = sendMail(
+                $notifyTo,
+                'Reserva reagendada por cliente - ' . mailBrandName(),
+                buildAdminBookingRescheduledMail($data)
+            );
+            $this->logMailEvent('reagendamiento_cliente_admin', $id, $sent);
+        } else {
+            error_log('Mail event reagendamiento_cliente_admin fallida | reserva_id=' . $id . ' | reason=admin_sin_destinatario');
+        }
+    }
+
+    private function bookingMailData(array $reserva): array {
+        return [
+            'nombre' => $reserva['cliente'] ?? $reserva['nombre'] ?? '',
+            'correo' => $reserva['correo'] ?? '',
+            'fecha' => $reserva['fecha'] ?? '',
+            'hora' => $reserva['hora'] ?? '',
+            'hora_fin' => $this->bookingEndTime($reserva),
+            'duracion_min' => (int)($reserva['duracion_min'] ?? 30),
+            'servicio' => $reserva['servicio'] ?? $reserva['servicio_nombre'] ?? '',
+            'motivo' => $reserva['observacion_admin'] ?? '',
+        ];
+    }
+
+    private function bookingEndTime(array $reserva): string {
+        $fecha = $this->dateOnly($reserva['fecha'] ?? '');
+        $hora = (string)($reserva['hora'] ?? '');
+        $horaNormalizada = $this->normalizeTime($hora);
+        if ($fecha === '' || !$horaNormalizada) {
+            return '';
+        }
+
+        $duracionMin = (int)($reserva['duracion_min'] ?? 30);
+        $startAt = DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s',
+            $fecha . ' ' . $horaNormalizada,
+            new DateTimeZone('America/Santiago')
+        );
+
+        if (!$startAt) {
+            return '';
+        }
+
+        return $startAt->modify('+' . $duracionMin . ' minutes')->format('H:i:s');
+    }
+
+    private function dateOnly($value): string {
+        $date = $this->normalizeDate((string)$value);
+        if ($date) {
+            return $date;
+        }
+
+        $ts = strtotime((string)$value);
+        return $ts === false ? '' : date('Y-m-d', $ts);
+    }
+
+    private function logMailEvent(string $event, int $reservaId, bool $sent): void {
+        $result = json_encode(mailLastResult(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        error_log(
+            'Mail event ' . $event . ' ' . ($sent ? 'enviada' : 'fallida')
+            . ' | reserva_id=' . $reservaId
+            . ' | result=' . ($result ?: '{}')
+        );
     }
 
 }

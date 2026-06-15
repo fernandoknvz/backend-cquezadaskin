@@ -550,6 +550,9 @@ function buildAdminBookingRescheduledMail(array $data)
     $nombre = $data['nombre'] ?? '';
     $correo = $data['correo'] ?? '';
     $servicio = $data['servicio'] ?? '';
+    $origen = strtolower(trim((string)($data['origen'] ?? 'admin')));
+    $origenTexto = $origen === 'cliente' ? 'el cliente' : 'la administracion';
+    $origenDetalle = $origen === 'cliente' ? 'Cliente' : 'Admin';
     $fechaAnterior = formatMailDate($data['fecha_anterior'] ?? '');
     $horaAnterior = formatMailTime($data['hora_anterior'] ?? '');
     $fechaNueva = formatMailDate($data['fecha_nueva'] ?? '');
@@ -557,11 +560,12 @@ function buildAdminBookingRescheduledMail(array $data)
     $duracion = $data['duracion_min'] ?? '';
 
     $intro = '
-        <p style="margin-top:0;">Una reserva fue reagendada desde la administracion.</p>
+        <p style="margin-top:0;">Una reserva fue reagendada por ' . mailSafe($origenTexto) . '.</p>
         <p>Detalle del cambio:</p>
     ';
 
     $rows = '';
+    $rows .= buildMailDetailRow('Origen', $origenDetalle);
     $rows .= buildMailDetailRow('Cliente', $nombre);
     $rows .= buildMailDetailRow('Correo', $correo);
     if ($servicio !== '') {
