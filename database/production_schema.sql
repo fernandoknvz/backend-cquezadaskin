@@ -9,6 +9,7 @@
 --   migrations/2026_05_22_admin_clientes_reservas.sql
 --   migrations/2026_05_22_faq_valoraciones.sql
 --   migrations/2026_06_13_reservas_duracion.sql
+--   migrations/2026_06_15_servicios_mostrar_especiales.sql
 --
 -- This file intentionally does not create the database and does not insert
 -- development admin users, customer data, appointments, refresh tokens, or
@@ -172,12 +173,14 @@ CREATE TABLE `servicios` (
   `cta_secondary_label` VARCHAR(120) DEFAULT NULL,
   `cta_secondary_url` VARCHAR(255) DEFAULT NULL,
   `mostrar_servicios` TINYINT(1) DEFAULT 0,
+  `mostrar_especiales` TINYINT(1) NOT NULL DEFAULT 0,
   `mostrar_empresas` TINYINT(1) DEFAULT 0,
   `activo` TINYINT(1) DEFAULT 1,
   `orden` INT DEFAULT 0,
   PRIMARY KEY (`id`),
   KEY `categoria_id` (`categoria_id`),
   KEY `idx_servicios_public` (`activo`, `orden`),
+  KEY `idx_servicios_especiales` (`activo`, `mostrar_especiales`, `orden`, `id`),
   CONSTRAINT `servicios_ibfk_1` FOREIGN KEY (`categoria_id`) REFERENCES `categorias_servicio` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -263,12 +266,12 @@ INSERT INTO `home_content` (`id`, `titulo`, `subtitulo`, `imagen_url`, `video_em
 (1, 'Cuidado profesional para tu piel', 'Tratamientos faciales y corporales personalizados.', NULL, NULL);
 
 INSERT INTO `servicios`
-  (`id`, `categoria_id`, `nombre`, `etiqueta`, `subtitulo`, `descripcion`, `beneficios`, `imagen_url`, `precio`, `cta_primary_label`, `cta_primary_url`, `cta_secondary_label`, `cta_secondary_url`, `mostrar_servicios`, `mostrar_empresas`, `activo`, `orden`)
+  (`id`, `categoria_id`, `nombre`, `etiqueta`, `subtitulo`, `descripcion`, `beneficios`, `imagen_url`, `precio`, `cta_primary_label`, `cta_primary_url`, `cta_secondary_label`, `cta_secondary_url`, `mostrar_servicios`, `mostrar_especiales`, `mostrar_empresas`, `activo`, `orden`)
 VALUES
-(1, 1, 'Limpieza Facial Premium', 'Facial', 'Limpieza facial', 'Evaluacion, higienizacion, exfoliacion, extraccion e hidratacion profunda.', '["Evaluacion personalizada","Limpieza profunda","Hidratacion","Rutina de cuidado"]', NULL, NULL, 'Agendar', '/contacto', 'Ver disponibilidad', '/contacto', 1, 0, 1, 1),
-(2, 1, 'Limpieza Facial Deluxe', 'Facial', 'Experiencia completa', 'Tratamiento facial integral con aparatologia y mascarilla premium.', '["Diagnostico de piel","Tratamiento integral","Fototerapia LED","Proteccion solar"]', NULL, NULL, 'Agendar', '/contacto', 'Consultar', '/contacto', 1, 0, 1, 2),
-(3, 2, 'Masaje Relajante', 'Corporal', 'Bienestar corporal', 'Sesion orientada a relajar tensiones y mejorar la sensacion de descanso.', '["Relajacion","Bienestar","Alivio de tension","Atencion personalizada"]', NULL, NULL, 'Agendar', '/contacto', 'Consultar', '/contacto', 1, 0, 1, 3),
-(4, 3, 'Perfilado de Cejas', 'Depilacion', 'Diseno y perfilado', 'Servicio estetico de diseno, perfilado y cuidado de cejas.', '["Diseno personalizado","Acabado limpio","Asesoria de cuidado"]', NULL, NULL, 'Agendar', '/contacto', 'Consultar', '/contacto', 1, 0, 1, 4);
+(1, 1, 'Limpieza Facial Premium', 'Facial', 'Limpieza facial', 'Evaluacion, higienizacion, exfoliacion, extraccion e hidratacion profunda.', '["Evaluacion personalizada","Limpieza profunda","Hidratacion","Rutina de cuidado"]', NULL, NULL, 'Agendar', '/contacto', 'Ver disponibilidad', '/contacto', 1, 0, 0, 1, 1),
+(2, 1, 'Limpieza Facial Deluxe', 'Facial', 'Experiencia completa', 'Tratamiento facial integral con aparatologia y mascarilla premium.', '["Diagnostico de piel","Tratamiento integral","Fototerapia LED","Proteccion solar"]', NULL, NULL, 'Agendar', '/contacto', 'Consultar', '/contacto', 1, 0, 0, 1, 2),
+(3, 2, 'Masaje Relajante', 'Corporal', 'Bienestar corporal', 'Sesion orientada a relajar tensiones y mejorar la sensacion de descanso.', '["Relajacion","Bienestar","Alivio de tension","Atencion personalizada"]', NULL, NULL, 'Agendar', '/contacto', 'Consultar', '/contacto', 1, 0, 0, 1, 3),
+(4, 3, 'Perfilado de Cejas', 'Depilacion', 'Diseno y perfilado', 'Servicio estetico de diseno, perfilado y cuidado de cejas.', '["Diseno personalizado","Acabado limpio","Asesoria de cuidado"]', NULL, NULL, 'Agendar', '/contacto', 'Consultar', '/contacto', 1, 0, 0, 1, 4);
 
 INSERT INTO `site_config` (`id`, `whatsapp`, `whatsapp_message`, `instagram_profile_url`) VALUES
 (1, NULL, 'Hola, me gustaria agendar una cita', NULL);

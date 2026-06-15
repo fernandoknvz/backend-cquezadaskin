@@ -15,13 +15,22 @@ class ServicioModel {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function getPublicActive() {
+    public function getPublicActive($section = null) {
+        $sectionFilters = [
+            'servicios' => 'mostrar_servicios = 1',
+            'especiales' => 'mostrar_especiales = 1',
+            'empresas' => 'mostrar_empresas = 1',
+        ];
+        $sectionKey = is_string($section) ? strtolower(trim($section)) : '';
+        $sectionWhere = $sectionFilters[$sectionKey] ?? '1 = 1';
+
         $stmt = $this->pdo->prepare(
             "SELECT id, categoria_id, nombre, etiqueta, subtitulo, descripcion, beneficios,
                     imagen_url, precio, cta_primary_label, cta_primary_url,
-                    cta_secondary_label, cta_secondary_url, orden
+                    cta_secondary_label, cta_secondary_url, mostrar_servicios,
+                    mostrar_especiales, mostrar_empresas, activo, orden
              FROM servicios
-             WHERE activo = 1
+             WHERE activo = 1 AND $sectionWhere
              ORDER BY orden ASC, id ASC"
         );
         $stmt->execute();
@@ -51,10 +60,10 @@ class ServicioModel {
        ======================================================= */
     public function create($data) {
         $sql = "INSERT INTO servicios (categoria_id, nombre, etiqueta, subtitulo, descripcion, beneficios, imagen_url, precio,
-                cta_primary_label, cta_primary_url, cta_secondary_label, cta_secondary_url, mostrar_servicios, mostrar_empresas,
+                cta_primary_label, cta_primary_url, cta_secondary_label, cta_secondary_url, mostrar_servicios, mostrar_especiales, mostrar_empresas,
                 orden, activo)
                 VALUES (:categoria_id, :nombre, :etiqueta, :subtitulo, :descripcion, :beneficios, :imagen_url, :precio,
-                :cta_primary_label, :cta_primary_url, :cta_secondary_label, :cta_secondary_url, :mostrar_servicios, :mostrar_empresas,
+                :cta_primary_label, :cta_primary_url, :cta_secondary_label, :cta_secondary_url, :mostrar_servicios, :mostrar_especiales, :mostrar_empresas,
                 :orden, :activo)";
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute([
@@ -71,6 +80,7 @@ class ServicioModel {
             ':cta_secondary_label' => $data['cta_secondary_label'] ?? null,
             ':cta_secondary_url' => $data['cta_secondary_url'] ?? null,
             ':mostrar_servicios' => !empty($data['mostrar_servicios']) ? 1 : 0,
+            ':mostrar_especiales' => !empty($data['mostrar_especiales']) ? 1 : 0,
             ':mostrar_empresas' => !empty($data['mostrar_empresas']) ? 1 : 0,
             ':orden' => $data['orden'] ?? 0,
             ':activo' => isset($data['activo']) && $data['activo'] ? 1 : 0
@@ -107,6 +117,7 @@ class ServicioModel {
                     cta_secondary_label = :cta_secondary_label,
                     cta_secondary_url = :cta_secondary_url,
                     mostrar_servicios = :mostrar_servicios,
+                    mostrar_especiales = :mostrar_especiales,
                     mostrar_empresas = :mostrar_empresas,
                     orden = :orden,
                     activo = :activo
@@ -130,6 +141,9 @@ class ServicioModel {
             ':mostrar_servicios' => isset($data['mostrar_servicios'])
                 ? ($data['mostrar_servicios'] ? 1 : 0)
                 : (int)($existing['mostrar_servicios'] ?? 0),
+            ':mostrar_especiales' => isset($data['mostrar_especiales'])
+                ? ($data['mostrar_especiales'] ? 1 : 0)
+                : (int)($existing['mostrar_especiales'] ?? 0),
             ':mostrar_empresas' => isset($data['mostrar_empresas'])
                 ? ($data['mostrar_empresas'] ? 1 : 0)
                 : (int)($existing['mostrar_empresas'] ?? 0),
