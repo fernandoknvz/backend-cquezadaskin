@@ -143,6 +143,19 @@ class ServicioModel {
     /* =======================================================
        🔹 Eliminar servicio
        ======================================================= */
+    public function updateImageUrl(int $id, string $imageUrl): bool {
+        $stmt = $this->pdo->prepare(
+            "UPDATE servicios
+             SET imagen_url = :imagen_url
+             WHERE id = :id"
+        );
+        $stmt->execute([
+            ':imagen_url' => $imageUrl,
+            ':id' => $id,
+        ]);
+        return $stmt->rowCount() > 0;
+    }
+
     public function delete($id) {
         $stmt = $this->pdo->prepare("DELETE FROM servicios WHERE id = :id");
         $stmt->execute(['id' => $id]);
