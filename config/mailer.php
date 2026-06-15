@@ -545,6 +545,83 @@ function buildClientBookingRescheduledMail(array $data)
     );
 }
 
+function buildClientBookingRescheduleRequestedMail(array $data)
+{
+    $nombre = $data['nombre'] ?? '';
+    $servicio = $data['servicio'] ?? '';
+    $fechaAnterior = formatMailDate($data['fecha_anterior'] ?? '');
+    $horaAnterior = formatMailTime($data['hora_anterior'] ?? '');
+    $fechaNueva = formatMailDate($data['fecha_nueva'] ?? '');
+    $horaNueva = formatMailTime($data['hora_nueva'] ?? '');
+    $horaFinNueva = formatMailTime($data['hora_fin_nueva'] ?? '');
+    $duracion = $data['duracion_min'] ?? '';
+
+    $intro = '
+        <p style="margin-top:0;">Hola ' . mailSafe($nombre) . ',</p>
+        <p>Recibimos tu solicitud de reagendamiento en <strong>' . mailSafe(mailBrandName()) . '</strong>.</p>
+        <p>El nuevo horario quedo pendiente de confirmacion por nuestro equipo.</p>
+    ';
+
+    $rows = '';
+    if ($servicio !== '') {
+        $rows .= buildMailDetailRow('Servicio', $servicio);
+    }
+    $rows .= buildMailDetailRow('Horario anterior', trim($fechaAnterior . ' ' . $horaAnterior));
+    $rows .= buildMailDetailRow(
+        'Horario solicitado',
+        $horaFinNueva !== '' ? trim($fechaNueva . ' ' . $horaNueva . ' a ' . $horaFinNueva) : trim($fechaNueva . ' ' . $horaNueva)
+    );
+    if ($duracion !== '') {
+        $rows .= buildMailDetailRow('Duracion', $duracion . ' minutos');
+    }
+    $rows .= buildMailDetailRow('Estado', 'Pendiente de confirmacion');
+
+    return buildMailLayout(
+        'Solicitud de reagendamiento recibida',
+        $intro,
+        $rows,
+        'Te avisaremos cuando el nuevo horario sea confirmado.'
+    );
+}
+
+function buildAdminBookingClientRescheduleRequestedMail(array $data)
+{
+    $nombre = $data['nombre'] ?? '';
+    $correo = $data['correo'] ?? '';
+    $servicio = $data['servicio'] ?? '';
+    $fechaAnterior = formatMailDate($data['fecha_anterior'] ?? '');
+    $horaAnterior = formatMailTime($data['hora_anterior'] ?? '');
+    $fechaNueva = formatMailDate($data['fecha_nueva'] ?? '');
+    $horaNueva = formatMailTime($data['hora_nueva'] ?? '');
+    $duracion = $data['duracion_min'] ?? '';
+
+    $intro = '
+        <p style="margin-top:0;">Un cliente solicito reagendar una reserva.</p>
+        <p>La cita quedo en estado pendiente y requiere confirmacion desde el panel.</p>
+    ';
+
+    $rows = '';
+    $rows .= buildMailDetailRow('Origen', 'Cliente');
+    $rows .= buildMailDetailRow('Cliente', $nombre);
+    $rows .= buildMailDetailRow('Correo', $correo);
+    if ($servicio !== '') {
+        $rows .= buildMailDetailRow('Servicio', $servicio);
+    }
+    $rows .= buildMailDetailRow('Horario anterior', trim($fechaAnterior . ' ' . $horaAnterior));
+    $rows .= buildMailDetailRow('Horario solicitado', trim($fechaNueva . ' ' . $horaNueva));
+    if ($duracion !== '') {
+        $rows .= buildMailDetailRow('Duracion', $duracion . ' minutos');
+    }
+    $rows .= buildMailDetailRow('Estado', 'Pendiente de confirmacion');
+
+    return buildMailLayout(
+        'Solicitud de reagendamiento',
+        $intro,
+        $rows,
+        'Confirma o gestiona esta reserva desde el panel administrativo.'
+    );
+}
+
 function buildAdminBookingRescheduledMail(array $data)
 {
     $nombre = $data['nombre'] ?? '';

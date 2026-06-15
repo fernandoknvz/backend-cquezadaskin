@@ -306,8 +306,12 @@ class ClienteAuthController {
             return Response::error("Esta reserva no se puede cancelar", 400);
         }
 
-        if ($this->isTooSoon($reserva['fecha'], $reserva['hora'])) {
-            return Response::error("No puedes cancelar una reserva con menos de 1 hora de anticipación", 400);
+        $timingRestriction = $this->reservationTimingRestriction($reserva['fecha'], $reserva['hora']);
+        if ($timingRestriction === 'past') {
+            return Response::error("No puedes cancelar una reserva pasada", 400);
+        }
+        if ($timingRestriction === 'too_soon') {
+            return Response::error("No puedes cancelar una reserva con menos de 1 hora de anticipacion", 400);
         }
 
         $motivo = $this->optionalText($body['motivo'] ?? null);
@@ -340,14 +344,22 @@ class ClienteAuthController {
 
         $fecha = $this->normalizeDate($body['fecha'] ?? null);
         $hora = $this->normalizeTime($body['hora'] ?? null);
-        $motivo = $this->optionalText($body['motivo'] ?? null);
+        $motivoCliente = $this->optionalText($body['motivo'] ?? null);
+        $motivo = 'Reagendada por cliente. Requiere confirmacion admin.';
+        if ($motivoCliente !== null) {
+            $motivo .= ' Motivo cliente: ' . $motivoCliente;
+        }
 
         if (!$fecha || !$hora) {
             return Response::error("fecha y hora válidas son requeridas", 400);
         }
 
-        if ($this->isTooSoon($fecha, $hora)) {
-            return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 1 hora de anticipación", 400);
+        $timingRestriction = $this->reservationTimingRestriction($fecha, $hora);
+        if ($timingRestriction === 'past') {
+            return Response::error("No se puede reagendar en horarios pasados", 400);
+        }
+        if ($timingRestriction === 'too_soon') {
+            return Response::error("Para reservas de hoy debes seleccionar un horario con al menos 1 hora de anticipacion", 400);
         }
 
         $duracionMin = (int)($reserva['duracion_min'] ?? 30);
@@ -371,7 +383,7 @@ class ClienteAuthController {
 
         Response::json([
             'success' => true,
-            'message' => 'Reserva reagendada',
+            'message' => 'Solicitud de reagendamiento recibida y pendiente de confirmacion',
             'data' => $this->citaModel->getClienteReservaById($reservaId, $clienteId),
         ]);
     }
@@ -511,21 +523,34 @@ class ClienteAuthController {
     }
 
     private function isTooSoon(string $fecha, string $hora): bool {
+        return $this->reservationTimingRestriction($fecha, $hora) !== null;
+    }
+
+    private function reservationTimingRestriction(string $fecha, string $hora): ?string {
+        $horaNormalizada = $this->normalizeTime($hora);
+        if (!$horaNormalizada) {
+            return 'past';
+        }
+
         $startAt = DateTimeImmutable::createFromFormat(
             'Y-m-d H:i:s',
-            $fecha . ' ' . $hora,
+            $fecha . ' ' . $horaNormalizada,
             new DateTimeZone('America/Santiago')
         );
         if (!$startAt) {
-            return true;
+            return 'past';
         }
 
         $now = new DateTimeImmutable('now', new DateTimeZone('America/Santiago'));
         if ($fecha < $now->format('Y-m-d')) {
-            return true;
+            return 'past';
         }
 
-        return $fecha === $now->format('Y-m-d') && $startAt < $now->modify('+1 hour');
+        if ($fecha === $now->format('Y-m-d') && $startAt < $now->modify('+1 hour')) {
+            return 'too_soon';
+        }
+
+        return null;
     }
 
     private function buildSlots(string $fecha, string $hora, int $duracionMin): array {
@@ -557,12 +582,13 @@ class ClienteAuthController {
         $data['hora_nueva'] = $after['hora'] ?? '';
         $data['hora_fin_nueva'] = $this->bookingEndTime($after);
         $data['origen'] = 'cliente';
+        $data['estado'] = 'pendiente';
 
         if ($correo !== '') {
             $sent = sendMail(
                 $correo,
-                'Tu hora ha sido reagendada - ' . mailBrandName(),
-                buildClientBookingRescheduledMail($data)
+                'Recibimos tu solicitud de reagendamiento - ' . mailBrandName(),
+                buildClientBookingRescheduleRequestedMail($data)
             );
             $this->logMailEvent('reagendamiento_cliente', $id, $sent);
         } else {
@@ -573,8 +599,8 @@ class ClienteAuthController {
         if ($notifyTo) {
             $sent = sendMail(
                 $notifyTo,
-                'Reserva reagendada por cliente - ' . mailBrandName(),
-                buildAdminBookingRescheduledMail($data)
+                'Solicitud de reagendamiento de cliente - ' . mailBrandName(),
+                buildAdminBookingClientRescheduleRequestedMail($data)
             );
             $this->logMailEvent('reagendamiento_cliente_admin', $id, $sent);
         } else {

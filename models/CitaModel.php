@@ -285,7 +285,7 @@ class CitaModel {
             "UPDATE citas
              SET fecha = :fecha,
                  hora = :hora,
-                 estado = 'reagendada',
+                 estado = 'pendiente',
                  observacion_admin = :motivo
              WHERE id = :id AND cliente_id = :cliente_id"
         );
