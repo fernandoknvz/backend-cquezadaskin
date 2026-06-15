@@ -9,6 +9,7 @@ class ServicioController {
     private const IMAGE_FIELD = 'imagen';
     private const MAX_IMAGE_BYTES = 2097152;
     private const UPLOAD_PUBLIC_DIR = '/uploads/servicios';
+    private const CLOUDINARY_UPLOAD_URL_TEMPLATE = 'https://api.cloudinary.com/v1_1/%s/image/upload';
     private const ALLOWED_IMAGE_TYPES = [
         'image/jpeg' => 'jpg',
         'image/png' => 'png',
@@ -149,10 +150,137 @@ class ServicioController {
         $extension = $this->validateServiceImageUpload($file);
         $tmpName = (string)$file['tmp_name'];
 
-        $uploadDir = dirname(__DIR__) . self::UPLOAD_PUBLIC_DIR;
-        if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true)) {
-            throw new Exception("No se pudo preparar la carpeta de imagenes");
+        return $this->uploadServiceImageToCloudinary($serviceId, $tmpName, $extension);
+    }
+
+    private function uploadServiceImageToCloudinary(int $serviceId, string $tmpName, string $extension): string {
+        $config = $this->cloudinaryConfig();
+        $timestamp = time();
+        $publicId = 'servicio-' . $serviceId . '-' . $timestamp;
+        $paramsToSign = [
+            'folder' => $config['folder'],
+            'public_id' => $publicId,
+            'timestamp' => $timestamp,
+        ];
+        $signature = $this->cloudinarySignature($paramsToSign, $config['api_secret']);
+        $url = sprintf(self::CLOUDINARY_UPLOAD_URL_TEMPLATE, rawurlencode($config['cloud_name']));
+
+        if (!function_exists('curl_init')) {
+            error_log('Cloudinary upload error | reason=curl_extension_missing');
+            throw new Exception("No se pudo subir la imagen a Cloudinary");
         }
+
+        $postFields = [
+            'file' => new CURLFile($tmpName, mime_content_type($tmpName) ?: 'image/' . $extension, 'servicio.' . $extension),
+            'api_key' => $config['api_key'],
+            'timestamp' => (string)$timestamp,
+            'folder' => $config['folder'],
+            'public_id' => $publicId,
+            'signature' => $signature,
+        ];
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_POSTFIELDS => $postFields,
+        ]);
+
+        $responseBody = (string)curl_exec($ch);
+        $curlError = curl_error($ch);
+        $statusCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($responseBody === '' || $statusCode < 200 || $statusCode >= 300) {
+            error_log(
+                'Cloudinary upload HTTP error'
+                . ' | status=' . $statusCode
+                . ' | curl_error=' . ($curlError ?: 'none')
+                . ' | body=' . $this->sanitizeCloudinaryLog($responseBody)
+            );
+            throw new Exception("No se pudo subir la imagen a Cloudinary");
+        }
+
+        $data = json_decode($responseBody, true);
+        $secureUrl = is_array($data) ? trim((string)($data['secure_url'] ?? '')) : '';
+        if ($secureUrl === '' || !filter_var($secureUrl, FILTER_VALIDATE_URL)) {
+            error_log('Cloudinary upload invalid response | body=' . $this->sanitizeCloudinaryLog($responseBody));
+            throw new Exception("Respuesta invalida de Cloudinary");
+        }
+
+        return $secureUrl;
+    }
+
+    private function cloudinaryConfig(): array {
+        $cloudName = $this->env('CLOUDINARY_CLOUD_NAME');
+        $apiKey = $this->env('CLOUDINARY_API_KEY');
+        $apiSecret = $this->env('CLOUDINARY_API_SECRET');
+        $folder = trim($this->env('CLOUDINARY_FOLDER'), '/');
+
+        $missing = [];
+        if ($cloudName === '') {
+            $missing[] = 'CLOUDINARY_CLOUD_NAME';
+            error_log('Cloudinary config missing | key=CLOUDINARY_CLOUD_NAME');
+        }
+        if ($apiKey === '') {
+            $missing[] = 'CLOUDINARY_API_KEY';
+            error_log('Cloudinary config missing | key=CLOUDINARY_API_KEY');
+        }
+        if ($apiSecret === '') {
+            $missing[] = 'CLOUDINARY_API_SECRET';
+            error_log('Cloudinary config missing | key=CLOUDINARY_API_SECRET');
+        }
+        if ($folder === '') {
+            $missing[] = 'CLOUDINARY_FOLDER';
+            error_log('Cloudinary config missing | key=CLOUDINARY_FOLDER');
+        }
+
+        if (!empty($missing)) {
+            throw new Exception('Falta configuracion Cloudinary: ' . implode(', ', $missing));
+        }
+
+        return [
+            'cloud_name' => $cloudName,
+            'api_key' => $apiKey,
+            'api_secret' => $apiSecret,
+            'folder' => $folder,
+        ];
+    }
+
+    private function cloudinarySignature(array $params, string $apiSecret): string {
+        ksort($params);
+        $pairs = [];
+        foreach ($params as $key => $value) {
+            if ($value === null || $value === '') {
+                continue;
+            }
+            $pairs[] = $key . '=' . $value;
+        }
+
+        return sha1(implode('&', $pairs) . $apiSecret);
+    }
+
+    private function env(string $key): string {
+        $value = getenv($key);
+        if ($value !== false && $value !== '') {
+            return trim((string)$value);
+        }
+        return trim((string)($_ENV[$key] ?? ''));
+    }
+
+    private function sanitizeCloudinaryLog(string $message): string {
+        $secret = $this->env('CLOUDINARY_API_SECRET');
+        if ($secret !== '') {
+            $message = str_replace($secret, '[redacted]', $message);
+        }
+
+        return substr($message, 0, 1000);
+    }
+
+    private function storeServiceImageLocally(int $serviceId, string $tmpName, string $extension): string {
+        $uploadDir = $this->serviceUploadDirectory();
+        $this->ensureServiceUploadDirectory($uploadDir);
 
         $filename = 'servicio-' . $serviceId . '-' . time() . '.' . $extension;
         $target = $uploadDir . DIRECTORY_SEPARATOR . $filename;
@@ -161,5 +289,48 @@ class ServicioController {
         }
 
         return self::UPLOAD_PUBLIC_DIR . '/' . $filename;
+    }
+
+    private function serviceUploadDirectory(): string {
+        $root = realpath(__DIR__ . '/..');
+        return ($root !== false ? $root : dirname(__DIR__)) . self::UPLOAD_PUBLIC_DIR;
+    }
+
+    private function ensureServiceUploadDirectory(string $uploadDir): void {
+        $existsBefore = is_dir($uploadDir);
+        $mkdirError = null;
+
+        if (!$existsBefore) {
+            set_error_handler(static function ($severity, $message) use (&$mkdirError) {
+                $mkdirError = $message;
+            });
+            $created = mkdir($uploadDir, 0775, true);
+            restore_error_handler();
+
+            if (!$created && !is_dir($uploadDir)) {
+                $this->logUploadDirectoryState($uploadDir, $mkdirError ?: 'mkdir returned false');
+                throw new Exception("No se pudo preparar la carpeta de imagenes");
+            }
+        }
+
+        clearstatcache(true, $uploadDir);
+        if (!is_dir($uploadDir) || !is_writable($uploadDir)) {
+            $this->logUploadDirectoryState($uploadDir, $mkdirError);
+            throw new Exception("No se pudo preparar la carpeta de imagenes");
+        }
+    }
+
+    private function logUploadDirectoryState(string $uploadDir, ?string $mkdirError = null): void {
+        $parent = dirname($uploadDir);
+        error_log(
+            'Servicio image upload directory error'
+            . ' | path=' . $uploadDir
+            . ' | exists=' . (is_dir($uploadDir) ? 'yes' : 'no')
+            . ' | writable=' . (is_writable($uploadDir) ? 'yes' : 'no')
+            . ' | parent=' . $parent
+            . ' | parent_exists=' . (is_dir($parent) ? 'yes' : 'no')
+            . ' | parent_writable=' . (is_writable($parent) ? 'yes' : 'no')
+            . ' | mkdir_error=' . ($mkdirError ?: 'none')
+        );
     }
 }
