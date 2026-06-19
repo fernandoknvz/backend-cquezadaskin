@@ -130,11 +130,13 @@ function mailBrandName()
         ?: 'CQuezadaSkin';
 }
 
-function sendMailViaBrevoApi($to, $subject, $bodyHtml): bool
+function sendMailViaBrevoApi($to, $subject, $bodyHtml, $replyToAddress = null, $replyToName = null): bool
 {
     $apiKey = mailEnv('BREVO_API_KEY');
     $fromAddress = mailEnv('MAIL_FROM_ADDRESS') ?: mailEnv('MAIL_FROM');
     $fromName = mailEnv('MAIL_FROM_NAME') ?: mailBrandName();
+    $replyToAddress = $replyToAddress ?: (mailEnv('MAIL_REPLY_TO_ADDRESS') ?: mailEnv('MAIL_REPLY_TO') ?: null);
+    $replyToName = $replyToName ?: (mailEnv('MAIL_REPLY_TO_NAME') ?: $fromName);
 
     $missing = [];
     foreach ([
@@ -161,6 +163,10 @@ function sendMailViaBrevoApi($to, $subject, $bodyHtml): bool
         return mailSafeFailure('Destinatario invalido', ['to' => $to]);
     }
 
+    if ($replyToAddress && !filter_var($replyToAddress, FILTER_VALIDATE_EMAIL)) {
+        return mailSafeFailure('Reply-To Brevo API invalido', ['reply_to' => $replyToAddress, 'to' => $to]);
+    }
+
     $payload = [
         'sender' => [
             'name' => $fromName,
@@ -172,6 +178,13 @@ function sendMailViaBrevoApi($to, $subject, $bodyHtml): bool
         'subject' => (string)$subject,
         'htmlContent' => (string)$bodyHtml,
     ];
+
+    if ($replyToAddress) {
+        $payload['replyTo'] = [
+            'name' => $replyToName,
+            'email' => $replyToAddress,
+        ];
+    }
 
     $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($jsonPayload === false) {
@@ -662,12 +675,12 @@ function buildAdminBookingRescheduledMail(array $data)
     );
 }
 
-function sendMail($to, $subject, $bodyHtml)
+function sendMail($to, $subject, $bodyHtml, $replyToAddress = null, $replyToName = null)
 {
     try {
         $mailDriver = strtolower((string)(mailEnv('MAIL_DRIVER') ?: mailEnv('MAIL_MAILER') ?: 'smtp'));
         if ($mailDriver === 'brevo_api') {
-            return sendMailViaBrevoApi($to, $subject, $bodyHtml);
+            return sendMailViaBrevoApi($to, $subject, $bodyHtml, $replyToAddress, $replyToName);
         }
 
         if (!class_exists(PHPMailer::class)) {
@@ -750,13 +763,16 @@ function sendMail($to, $subject, $bodyHtml)
         $mail->CharSet = 'UTF-8';
 
         $fromName = mailEnv('MAIL_FROM_NAME') ?: $fromAddress;
-        $replyToAddress = mailEnv('MAIL_REPLY_TO_ADDRESS') ?: mailEnv('MAIL_REPLY_TO') ?: null;
-        $replyToName = mailEnv('MAIL_REPLY_TO_NAME') ?: $fromName;
+        $replyToAddress = $replyToAddress ?: (mailEnv('MAIL_REPLY_TO_ADDRESS') ?: mailEnv('MAIL_REPLY_TO') ?: null);
+        $replyToName = $replyToName ?: (mailEnv('MAIL_REPLY_TO_NAME') ?: $fromName);
 
         $mail->setFrom($fromAddress, $fromName);
         $mail->addAddress($to);
 
         if ($replyToAddress) {
+            if (!filter_var($replyToAddress, FILTER_VALIDATE_EMAIL)) {
+                return mailSafeFailure('Reply-To SMTP invalido', ['reply_to' => $replyToAddress, 'to' => $to]);
+            }
             $mail->addReplyTo($replyToAddress, $replyToName);
         }
 
